@@ -47,7 +47,7 @@ def run(
         save_state_to_disk,
     )
     from autored.persistence.sqlite_saver import make_checkpointer
-    from autored.graph import build_phase3_graph
+    from autored.graph import build_phase4_graph
     from autored.logging import setup_logging, get_logger
     from autored.tui.event_bus import EventBus
 
@@ -105,7 +105,7 @@ def run(
         # The checkpointer owns an open aiosqlite connection — we close it
         # in the ``finally`` below to avoid leaking file descriptors.
         checkpointer = await make_checkpointer(engagement_id)
-        graph = build_phase3_graph(checkpointer)
+        graph = build_phase4_graph(checkpointer)
         config = {"configurable": {"thread_id": engagement_id}}
         try:
             final_state = await graph.ainvoke(state, config=config)
