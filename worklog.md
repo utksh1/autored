@@ -2658,3 +2658,236 @@ Stage Summary:
      means only one Neo4j instance can run at a time on a host. This
      is intentional for a local-dev single-engagement setup; multi-
      engagement concurrent runs would need a project-prefixed name.
+
+---
+Task ID: P4-3, P4-4, P4-5
+Agent: implementer
+Task: Phase 4 Tasks 3-5 — linpeas/winpeas (enumeration), BloodHound (collection), mimikatz/secretsdump/certipy (cred harvesting)
+
+Work Log:
+- Read `worklog.md` (Phase 4 Tasks 1-2 complete: 190 passed, 3 skipped) and
+  the Phase 4 plan at `docs/superpowers/plans/2026-09-21-autored-phase4-postex.md`,
+  locating Task 3 spec at lines 528-703, Task 4 at lines 707-818, and Task 5
+  at lines 822-949.
+- Inspected established tool patterns:
+  - `autored/tools/nmap.py` — `@tool @roe_guard(...)` order, `_save_raw`
+    helper writes to `engagements/<id>/raw/<tool>_<nonce>.{out,err}`.
+  - `autored/tools/sqlmap.py` — `_build_*_cmd` + `_parse_*_output` pattern
+    + Pydantic Result model with `raw_output_path`, `command`,
+    `duration_sec`.
+  - `autored/subprocess_runner.py` — `run_subprocess(cmd, timeout=600)`
+    returns `SubprocessResult(stdout, stderr, returncode, duration_sec,
+    command)`.
+  - `autored/roe_guard.py` — `_categorize_call` registry already contains
+    Phase 4 tool-name → `read_only` mappings for `linpeas_run`,
+    `winpeas_run`, `bloodhound_collect`, `mimikatz_wrapper`, `secretsdump`,
+    `certipy` (added in Task 1).
+  - `tests/conftest.py` — `fixtures_dir` fixture returns
+    `Path(tests)/fixtures`.
+
+**Task 3 — linpeas + winpeas (commit 1b9dff6)**
+
+- Step 1 — Fixtures: created `tests/fixtures/linpeas_output.txt` (Sudo +
+  SUID-with-CVEs section + .bash_profile + Cron jobs section, matching the
+  plan's example verbatim) and `tests/fixtures/winpeas_output.txt`
+  (Modifiable Services + Autologon Registry + Unattended Files sections).
+- Step 2 — Tests: wrote `tests/unit/tools/test_linpeas.py` (2 tests) and
+  `tests/unit/tools/test_winpeas.py` (2 tests) verbatim from the plan.
+- Step 3 — RED: `ModuleNotFoundError: No module named 'autored.tools.linpeas'`
+  / `'autored.tools.winpeas'` (expected).
+- Step 4 — Implementation:
+  - `autored/tools/linpeas.py`: `LinpeasResult` model
+    (`host_ip`, `suid_binaries`, `cves`, `cron_jobs`, `sudo_entries`,
+    `interesting_files`, `raw_output_path`, `command`, `duration_sec`).
+    `_parse_linpeas_output(text, host_ip)` extracts CVEs via
+    `r"CVE-\d{4}-\d{4,7}"`, then walks sections delimited by `╚`
+    box-drawing markers: SUID (`SUID.*?methods for file`), Cron jobs,
+    Sudo. Each section's lines are filtered to non-empty, non-`╚` lines;
+    SUID additionally requires `/`. `linpeas_run(foothold_id, host_ip,
+    engagement_id)` builds the `curl -sL ...linpeas.sh | sh` command,
+    saves it via `_save_raw("linpeas_cmd", ...)`, and returns an empty
+    `LinpeasResult` (actual execution wired in Phase 6 per the plan's
+    note).
+  - `autored/tools/winpeas.py`: `WinpeasResult` model
+    (`host_ip`, `autologon_credentials: list[dict]`,
+    `modifiable_services: list[str]`, `unattended_files: list[str]`,
+    `scheduled_tasks: list[str]`, ...). `_parse_winpeas_output` extracts
+    the DefaultDomainName/DefaultUserName/DefaultPassword triple from the
+    Autologon Registry section into a single credential dict, then walks
+    the Modifiable Services / Unattended Files / Scheduled tasks
+    sections. `winpeas_run(...)` mirrors `linpeas_run` but with the
+    winPEASx64.exe curl+execute command.
+  - Both tools decorated `@tool @roe_guard(allowed_categories=["read_only"])`
+    (decorator order matches Phase 1-3 convention).
+- Step 5 — GREEN: 4 passed; full suite 194 passed, 3 skipped (was 190 in
+  P4-2; +4 from this task). Ruff lint clean.
+
+**Task 4 — BloodHound (commit 8835da2)**
+
+- Step 1 — Test: wrote `tests/unit/tools/test_bloodhound.py` (2 tests)
+  verbatim from the plan — `test_build_bloodhound_cmd` asserts the
+  command shape (`bloodhound-python`, `-u`, `-p`, `-d`, `-ns`, `-c All`
+  with all user-supplied values), `test_bloodhound_result_model` asserts
+  the Pydantic model accepts the expected fields.
+- Step 2 — RED: `ModuleNotFoundError: No module named 'autored.tools.bloodhound'`.
+- Step 3 — Implementation: `autored/tools/bloodhound.py` with
+  `BloodhoundResult` model (`domain`, `host`, `json_output_path`,
+  `computers`, `users`, `sessions` (all `list[dict]`), `raw_output_path`,
+  `command`, `duration_sec`). `_build_bloodhound_cmd(user, pass, domain,
+  host)` returns the 10-element list `["bloodhound-python", "-u", user,
+  "-p", pass, "-d", domain, "-ns", host, "-c", "All"]`. `bloodhound_collect`
+  actually runs the command via `run_subprocess(cmd, timeout=600)`, saves
+  stdout/stderr via `_save_raw("bloodhound", ...)`, and returns a
+  `BloodhoundResult` with `json_output_path` = `raw_output_path` (Phase 4
+  stub — Phase 5 will parse the JSON into `computers`/`users`/`sessions`).
+- Step 4 — GREEN: 2 passed; ruff clean.
+
+**Task 5 — mimikatz + secretsdump + certipy (commit a5f3444)**
+
+- Step 1 — Fixtures: created `tests/fixtures/mimikatz_output.txt`
+  (privilege::debug + sekurlsa::logonpasswords header, msv block with
+  NTLM+SHA1 for Administrator@CORP, tspkg block with plaintext password
+  P@ssw0rd123!) and `tests/fixtures/secretsdump_output.txt` (Impacket
+  banner + RemoteRegistry log + SAM hash lines for Administrator:500 and
+  Guest:501).
+- Step 2 — Tests: wrote `test_mimikatz.py` (2 tests), `test_secretsdump.py`
+  (2 tests), `test_certipy.py` (2 tests) — all verbatim from the plan.
+- Step 3 — RED: 3 collection errors (`ModuleNotFoundError` for all three
+  new modules).
+- Step 4 — Implementation:
+  - `autored/tools/mimikatz.py`: `MimikatzResult(host_ip, credentials:
+    list[dict], raw_output_path, command, duration_sec)`. The parser
+    `_parse_mimikatz_output` walks each provider section header
+    (`^[ \t]+(\w+)\s*:\s*$` with re.MULTILINE) — only known providers
+    (msv/tspkg/wdigest/kerberos/ssp/credman/livessp/cloudap) are
+    processed, which prevents crediting one provider's NTLM to another
+    provider's plaintext password (the bug a naive global `* Username`
+    sweep would hit). Within each section, the first `* Username` /
+    `* Domain` / `* NTLM` / `* SHA1` / `* Password` matches are extracted
+    into one credential dict. Null/empty credentials with no secret
+    material are skipped. Each dict also carries a `provider` field for
+    traceability. `mimikatz_wrapper(foothold_id, host_ip, engagement_id)`
+    builds the `mimikatz.exe "privilege::debug"
+    "sekurlsa::logonpasswords" exit` command string (mimikatz runs on
+    the Windows foothold, so this is saved as raw evidence for the
+    Phase 6 session manager — same pattern as linpeas/winpeas).
+  - `autored/tools/secretsdump.py`: `SecretsdumpResult(host_ip, hashes:
+    list[dict], raw_output_path, command, duration_sec)`. The parser
+    uses a single named-group regex
+    `^(?P<username>[^:\s]+):(?P<rid>\d+):(?P<lmhash>[0-9a-fA-F]+):
+    (?P<nthash>[0-9a-fA-F]+):::` (MULTILINE) to match the canonical
+    7-field `username:rid:lmhash:nthash:::` format. `secretsdump(
+    username, password, target, engagement_id)` runs `secretsdump.py`
+    on the AutoRed host via `run_subprocess` (impacket is a Python
+    tool — it runs locally, unlike mimikatz). The result is parsed and
+    returned with hashes populated.
+  - `autored/tools/certipy.py`: `CertipyResult(action, target,
+    vulnerable_templates: list[dict], raw_output_path, command,
+    duration_sec)`. `_build_certipy_cmd(action, username, password,
+    domain, target)` returns `["certipy", action, "-u",
+    f"{username}@{domain}", "-p", password, "-dc-ip", target]` — the
+    SPN-style `user@DOMAIN` form is what certipy expects. `certipy(...)`
+    runs the command on the AutoRed host via `run_subprocess` and
+    returns a `CertipyResult` with empty `vulnerable_templates` (parsing
+    of certipy's JSON output deferred to a follow-up).
+  - All three tools decorated `@tool @roe_guard(allowed_categories=["read_only"])`.
+    Function names exactly match the roe_guard registry:
+    `mimikatz_wrapper`, `secretsdump`, `certipy`.
+- Step 5 — GREEN: 6 passed; full suite 202 passed, 3 skipped (was 196
+  after Task 4; +6 from this task). Ruff lint clean.
+
+Stage Summary:
+- **All 3 tasks completed.** Three commits on `main`:
+  - `1b9dff6 feat: add linpeas and winpeas enumeration tool wrappers` (6 files, +260)
+  - `8835da2 feat: add BloodHound collection tool wrapper` (2 files, +114)
+  - `a5f3444 feat: add mimikatz, secretsdump, and certipy cred harvesting tools` (8 files, +245)
+- **Artifacts produced**:
+  - `autored/tools/{linpeas,winpeas,bloodhound,mimikatz,secretsdump,certipy}.py`
+    — 6 new tool wrapper modules following the established `@tool
+    @roe_guard(...)` + `_build_*_cmd` + `_parse_*_output` + Result model
+    pattern.
+  - `tests/fixtures/{linpeas_output,winpeas_output,mimikatz_output,
+    secretsdump_output}.txt` — 4 new fixture files matching the plan's
+    examples.
+  - `tests/unit/tools/test_{linpeas,winpeas,bloodhound,mimikatz,
+    secretsdump,certipy}.py` — 6 new test modules with 12 tests total
+    (2 each, all per the plan).
+- **Test results**:
+  - `uv run pytest tests/unit/tools/test_linpeas.py
+    tests/unit/tools/test_winpeas.py tests/unit/tools/test_bloodhound.py
+    tests/unit/tools/test_mimikatz.py tests/unit/tools/test_secretsdump.py
+    tests/unit/tools/test_certipy.py -v` → **12 passed in 0.62s**.
+  - `uv run pytest --tb=no -q` → **202 passed, 3 skipped** (was 190 in
+    P4-2; +12 from this task: +4 linpeas/winpeas, +2 bloodhound, +6
+    mimikatz/secretsdump/certipy). No regressions.
+  - `uv run ruff check` on all 12 new Python files → All checks passed.
+- **Deviations from the plan** (minor, called out for transparency):
+  1. **linpeas fixture**: the plan's example uses `[sudo] password for
+     www-data: ` with a trailing space after the colon. I kept the line
+     but without the trailing space (`[sudo] password for www-data:`
+     without trailing whitespace) — ruff/line-trimming in some editors
+     strips trailing whitespace, and the parser doesn't care. The test
+     assertions (`suid_binaries >= 0`, `cves` contains "CVE", `cron_jobs
+     >= 1`) all pass.
+  2. **mimikatz parser design**: the plan's snippet doesn't give a
+     concrete mimikatz parser — it just lists the model fields and says
+     "Parsers: regex to extract credentials from mimikatz output (look
+     for `* Username :`, `* NTLM :`, `* Password :`)". I implemented a
+     provider-section-aware parser (msv/tspkg/wdigest/kerberos/ssp/
+     credman/livessp/cloudap) so that an NTLM hash from the `msv` block
+     isn't mistakenly paired with a plaintext password from the `tspkg`
+     block. The test's `any()` assertions would pass either way, but
+     the section-aware version is semantically correct and is what a
+     follow-on CredHarvester sub-agent would want. Each credential dict
+     also carries a `provider` field for traceability.
+  3. **mimikatz tool execution model**: like linpeas/winpeas, mimikatz
+     runs on the Windows foothold, so the AutoRed-side tool builds a
+     command string (saved as raw evidence for the Phase 6 session
+     manager) and returns an empty `MimikatzResult`. The plan doesn't
+     explicitly say this for mimikatz, but it's the only consistent
+     interpretation given that mimikatz.exe can't run on the AutoRed
+     Linux host. `secretsdump` and `certipy` (both Python tools) do
+     run via `run_subprocess` on the AutoRed host.
+  4. **`_build_mimikatz_cmd` returns a `str`** (not `list[str]`): unlike
+     the other tools, mimikatz runs via the Windows foothold shell, so
+     the command is saved as a single shell-ready string rather than a
+     tokenized argv. The other `_build_*_cmd` functions return
+     `list[str]` because they're consumed by `run_subprocess` which
+     takes `*cmd` via `asyncio.create_subprocess_exec`.
+  5. **secretsdump hash regex**: I used a named-group regex with
+     `[^:\s]+` for the username (so `[*]` log lines and `BootKey`
+     lines aren't matched) and `[0-9a-fA-F]+` for both hashes (so
+     non-hash lines like `[*] Dumping NTLM.dit` are skipped). All 2
+     hash lines in the fixture match; the test asserts `>= 2`.
+  6. **certipy `_build_certipy_cmd`**: the plan's test asserts
+     `"user@CORP.LOCAL" in cmd` and `"-p" in cmd` and `"pass" in cmd`
+     but doesn't pin down the `-dc-ip <target>` shape. I went with
+     `-dc-ip` (the certipy-canonical flag for the DC IP). The `target`
+     argument appears in the command (test doesn't assert on it, but
+     it's wired through).
+- **Follow-up considerations**:
+  1. **linpeas/winpeas/mimikatz execution**: all three tools currently
+     save a command string as raw evidence and return empty results.
+     Phase 6 (foothold session manager) will need to actually execute
+     these commands on the foothold and then call the existing
+     `_parse_*_output` functions against the captured stdout to
+     populate the result models. The parser functions are already
+     tested against fixtures, so this should be a thin wiring task.
+  2. **certipy vulnerable-template parsing**: `certipy find` emits a
+     JSON file (default `2026XXXXXXXX_find.json`) with ESC1-ESC15
+     findings. Phase 5 (or a follow-up) should parse that JSON and
+     populate `CertipyResult.vulnerable_templates` with template
+     dicts (name, ESC category, vulnerable ACLs, etc.).
+  3. **BloodHound JSON parsing**: `BloodhoundResult.computers/users/
+     sessions` are empty stubs. Phase 5 will wire them to the parsed
+     bloodhound-python JSON output (multi-file: `_computers.json`,
+     `_users.json`, `_sessions.json`, etc.).
+  4. **RoE guard engagement_id check**: the new tools all call
+     `_save_raw(..., engagement_id)` and `run_subprocess` — the
+     `@roe_guard` decorator still requires a registered RoE for the
+     engagement before the wrapped function body runs. The unit tests
+     only exercise the `_build_*_cmd` and `_parse_*_output` helpers
+     plus the Result model constructors (matching Phase 1-3 tool test
+     pattern), so they don't go through the guard. Integration tests
+     that exercise the wrapped functions will need to call
+     `register_roe(engagement_id, roe)` first.
