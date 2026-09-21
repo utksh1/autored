@@ -1,18 +1,25 @@
-"""Phase 1 LangGraph orchestrator.
+"""LangGraph orchestrator (Phases 1–3).
 
-Graph topology::
+Graph topologies::
 
-    roe_gate_start  ──>  recon  ──┐
-                                   │
-                          (hosts found?)
-                            │       │
-                           yes      no
-                            │       │
-                            v       v
-                    report_phase1   END
-                            │
-                            v
-                           END
+    Phase 1:
+        roe_gate_start  ──>  recon  ──┐
+                                       │
+                              (hosts found?)
+                                │       │
+                               yes      no
+                                │       │
+                                v       v
+                        report_phase1   END
+                                │
+                                v
+                               END
+
+    Phase 2:
+        roe_gate_start  ──>  recon  ──>  vuln  ──>  report_phase1  ──>  END
+
+    Phase 3:
+        roe_gate_start ──> recon ──> vuln ──> exploit ──> report_phase1 ──> END
 
 Nodes
 -----
@@ -21,12 +28,23 @@ Nodes
   state patch. This guarantees every subsequent sub-agent tool call can
   find the RoE for scope enforcement.
 * ``recon`` — the Recon Agent (see :mod:`autored.agents.recon`).
+* ``vuln`` — the Vuln Agent (see :mod:`autored.agents.vuln`). Phase 2+.
+* ``exploit`` — the Exploit Agent (see :mod:`autored.agents.exploit`).
+  Phase 3+. Iterates the Vuln Agent's ranked attack hypotheses, emits a
+  HitL gate event per hypothesis (auto-approved in sandbox mode),
+  dispatches the approved exploit via one of 4 specialist sub-agents,
+  verifies the foothold, and captures evidence. Always transitions to
+  ``report_phase1`` — Phase 4 will add the post-ex branch.
 * ``report_phase1`` — stub. Phase 1 only needs to know the recon loop is
   done; the full Report Agent ships in Phase 6.
 
-The ``recon`` node has a conditional edge: if at least one host was
-discovered we go on to ``report_phase1``, otherwise we short-circuit
-straight to ``END`` (nothing to report on).
+The Phase 1 ``recon`` node has a conditional edge: if at least one host
+was discovered we go on to ``report_phase1``, otherwise we short-circuit
+straight to ``END`` (nothing to report on). Phase 2 and Phase 3 use
+linear edges — the Vuln Agent always advances to the next phase (vuln →
+report in Phase 2, vuln → exploit in Phase 3), and the Exploit Agent
+always advances to ``report_phase1`` (success or failure handled
+internally via the EventBus + foothold-verification logic).
 """
 
 from langgraph.graph import END, StateGraph
@@ -34,6 +52,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from autored.agents.recon import recon_node
 from autored.agents.vuln import vuln_node
+from autored.agents.exploit import exploit_node
 from autored.state import EngagementState
 
 
@@ -140,4 +159,62 @@ def build_phase2_graph(checkpointer: AsyncSqliteSaver):
     )
     graph.add_edge("report_phase1", END)
 
+    return graph.compile(checkpointer=checkpointer)
+
+
+def build_phase3_graph(checkpointer: AsyncSqliteSaver):
+    """Build the Phase 3 LangGraph: roe_gate → recon → vuln → exploit → report → END.
+
+    Phase 3 inserts the Exploit Agent between Vuln and Report. The Exploit
+    Agent consumes the Vuln Agent's ranked attack hypotheses, presents each
+    one at a HitL gate (TUI modal via EventBus — auto-approved in sandbox
+    mode), dispatches the approved exploit via one of 4 specialist
+    sub-agents (SQLiAgent, BruteAgent, MSFAgent, CustomAgent), verifies
+    the foothold, and captures evidence. On success the agent sets
+    ``phase="postex"``; on exhaustion it sets ``phase="report"``. Either
+    way the linear edge to ``report_phase1`` runs the Phase 1 report stub
+    (which sets ``phase="done"``).
+
+    Topology (linear — no conditional edges)::
+
+        roe_gate_start ──> recon ──> vuln ──> exploit ──> report_phase1 ──> END
+
+    The ``exploit`` node handles success/failure internally (it always
+    transitions to ``report_phase1`` — Phase 4 will add the post-ex branch
+    that runs the Post-Ex Agent when ``phase == "postex"``).
+
+    HitL gates are NOT modelled as LangGraph interrupts at the graph
+    level — they are handled inside ``exploit_node`` via the EventBus so
+    the orchestrator↔TUI communication can flow without LangGraph having
+    to know about it. In sandbox mode (``hitl_mode == "auto_approve"``)
+    the gates log the event and return immediately without blocking; in
+    interactive mode the node blocks on ``bus.wait_for_tui_response()``
+    until the operator picks approve / edit / reject / skip / abort.
+
+    Args:
+        checkpointer: a LangGraph checkpointer (typically an
+            ``AsyncSqliteSaver``) enabling resume-after-crash semantics.
+
+    Returns:
+        A compiled ``StateGraph`` ready to ``.ainvoke(...)``.
+    """
+    graph = StateGraph(EngagementState)
+
+    graph.add_node("roe_gate_start", roe_gate_node)
+    graph.add_node("recon", recon_node)
+    graph.add_node("vuln", vuln_node)
+    graph.add_node("exploit", exploit_node)
+    graph.add_node("report_phase1", report_node_phase1)
+
+    graph.set_entry_point("roe_gate_start")
+    graph.add_edge("roe_gate_start", "recon")
+    graph.add_edge("recon", "vuln")
+    graph.add_edge("vuln", "exploit")
+    graph.add_edge("exploit", "report_phase1")
+    graph.add_edge("report_phase1", END)
+
+    # Phase 3: no HitL interrupts at graph level (handled inside
+    # exploit_node via EventBus). The `exploit` node always transitions
+    # to `report_phase1` regardless of foothold success — Phase 4 will
+    # introduce the post-ex branch.
     return graph.compile(checkpointer=checkpointer)
