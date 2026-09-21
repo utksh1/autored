@@ -1,0 +1,15 @@
+╚══════════╣ Sudo
+[sudo] password for www-data:
+Sorry, try again.
+sudo: 1 incorrect password attempt
+
+╚══════════╣ SUID - Check easy privesc methods for file
+═╣ CVEs
+═╣ CVE-2022-0847      ╚ https://x.com/mxr0se/status/1502294156212273155
+═╣ CVE-2021-4034      ╚ https://github.com/berdav/CVE-2021-4034
+
+╚══════════╣ .bash_profile
+# User specific environment and startup programs
+
+╚══════════╣ Cron jobs
+* * * * * root /usr/bin/python3 /opt/backup.py

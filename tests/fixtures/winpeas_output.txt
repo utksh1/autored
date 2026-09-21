@@ -1,0 +1,11 @@
+╚══════════╣ Modifiable Services
+SC_MANAGER_CONNECT
+SC_MANAGER_CONNECT
+
+╚══════════╣ Checking for Autologon Registry
+DefaultDomainName    :  CORP
+DefaultUserName      :  Administrator
+DefaultPassword      :  P@ssw0rd123!
+
+╚══════════╣ Unattended Files
+C:\Windows\Panther\Unattend.xml
