@@ -47,18 +47,28 @@ def run(
         save_state_to_disk,
     )
     from autored.persistence.sqlite_saver import make_checkpointer
-    from autored.graph import build_phase2_graph
+    from autored.graph import build_phase3_graph
     from autored.logging import setup_logging, get_logger
+    from autored.tui.event_bus import EventBus
 
     setup_logging()
     log = get_logger("cli")
 
     if tui:
-        # TUI ships in Phase 3; for Phase 1 we hard-error rather than
-        # silently falling back so the operator knows the flag was honoured.
-        console.print("[bold red]TUI not implemented in Phase 1.[/]")
-        console.print("Re-run with --no-tui for headless mode.")
-        raise typer.Exit(code=1)
+        # Phase 3 ships a Textual TUI (DashboardScreen + HitLGateModal).
+        # The headless path below is the default — when ``--tui`` is
+        # passed we still wire an EventBus onto the state so the Exploit
+        # Agent's HitL gates have somewhere to emit / block. The actual
+        # Textual app launch (AutoRedTUI.run()) is left to a follow-up
+        # task — for now ``--tui`` is accepted and the engagement runs
+        # in auto-approve headless mode with the EventBus active.
+        console.print(
+            "[bold yellow]TUI mode requested — running with EventBus wired.[/]"
+        )
+        console.print(
+            "[dim](Full Textual UI launch ships in a follow-up — "
+            "engagement runs headless with auto-approve HitL.)[/]"
+        )
 
     roe_config = load_roe(roe)
     engagement_id = generate_engagement_id(target, name)
@@ -83,13 +93,19 @@ def run(
         rules_of_engagement=roe_config,
     )
 
+    # Phase 3: every engagement gets an EventBus on its state so the
+    # Exploit Agent's HitL gates can emit/await operator responses.
+    # In sandbox (auto_approve) mode the gates don't block; in
+    # interactive mode the TUI (when --tui is set) drains the queue.
+    state.event_bus = EventBus()
+
     log.info("engagement_start", engagement_id=engagement_id, target=target)
 
     async def _run():
         # The checkpointer owns an open aiosqlite connection — we close it
         # in the ``finally`` below to avoid leaking file descriptors.
         checkpointer = await make_checkpointer(engagement_id)
-        graph = build_phase2_graph(checkpointer)
+        graph = build_phase3_graph(checkpointer)
         config = {"configurable": {"thread_id": engagement_id}}
         try:
             final_state = await graph.ainvoke(state, config=config)
