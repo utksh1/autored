@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 from autored.models import (
     RulesOfEngagement,
@@ -41,3 +41,12 @@ class EngagementState(BaseModel):
     iteration_count: int = 0
     errors: list[ErrorEvent] = Field(default_factory=list)
     summary: str = ""
+
+    # EventBus is injected by the graph runner at runtime (Phase 3+) so
+    # LangGraph nodes can emit HitL gate events and block on operator
+    # responses. Declared as ``Any`` with ``exclude=True`` because it
+    # contains non-serialisable ``asyncio.Queue`` instances — Pydantic
+    # will skip it during ``model_dump`` / ``model_dump_json`` (which
+    # keeps the LangGraph SQLite checkpointer happy) and existing code
+    # that does not set it sees the default ``None``.
+    event_bus: Any = Field(default=None, exclude=True)
