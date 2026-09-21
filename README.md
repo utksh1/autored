@@ -92,3 +92,97 @@ Expected runtime: 10–15 minutes. The test passes if:
 - The Vuln Agent produces at least 1 attack hypothesis
 - At least one hypothesis references Shellshock (CVE-2014-6271)
 - The Phase 2 graph reaches the `done` phase
+
+## Phase 3 E2E Test (Blue)
+
+Phase 3 adds the Exploit Agent (HitL gates, sub-agent dispatch, foothold
+verification, evidence capture). The Phase 3 E2E test runs recon + vuln +
+exploit against HTB Blue (`10.10.10.40`) and asserts the Exploit Agent
+achieves an EternalBlue (MS17-010) foothold via Metasploit RPC.
+
+### Prerequisites
+
+In addition to the Phase 2 prerequisites, you need:
+
+1. **Metasploit Framework** with `msfrpcd` installed (Kali ships both).
+2. **Your HTB VPN IP** (the `tun0` interface address) — Metasploit's
+   reverse shell will connect back to this. Find it with:
+   ```bash
+   ip addr show tun0 | grep "inet "
+   ```
+
+### Start `msfrpcd`
+
+The Exploit Agent talks to Metasploit via RPC, so `msfrpcd` must be
+running before the test starts. In a separate terminal:
+
+```bash
+# Start msfrpcd on 127.0.0.1:55553 with password "msf"
+msfrpcd -P msf -p 55553 -a 127.0.0.1 -U msf -L
+```
+
+- `-P msf` — RPC password (must match the default in
+  `autored/tools/metasploit.py`)
+- `-p 55553` — RPC port (must match the default)
+- `-a 127.0.0.1` — bind to localhost only
+- `-U msf` — RPC username (unused by the msgpack RPC client but
+  required by `msfrpcd`)
+- `-L` — log to stdout so you can watch RPC calls
+
+Verify `msfrpcd` is listening:
+
+```bash
+ss -tlnp | grep 55553
+# expect: LISTEN ... 127.0.0.1:55553 ...
+```
+
+### Run the Phase 3 E2E test
+
+```bash
+# 1. Connect to HackTheBox VPN
+sudo openvpn user.ovpn
+
+# 2. Verify Blue is reachable
+ping 10.10.10.40
+
+# 3. Start msfrpcd (see above — keep this running in a separate terminal)
+msfrpcd -P msf -p 55553 -a 127.0.0.1 -U msf -L
+
+# 4. Find your HTB VPN IP
+export AUTORED_LHOST=$(ip -4 addr show tun0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+echo "LHOST=$AUTORED_LHOST"
+
+# 5. Set env vars
+export ANTHROPIC_API_KEY=sk-ant-...
+export DEEPSEEK_API_KEY=sk-...
+export AUTORED_E2E=1
+
+# 6. Run Phase 3 E2E test (use -s to see live findings + hypotheses + exploit)
+uv run pytest tests/e2e/test_phase3_blue.py -v -s
+```
+
+Expected runtime: 15–30 minutes (recon + vuln + Metasploit exploit). The
+test passes if:
+
+- Recon discovers port 445 (SMB) on Blue
+- All recon tools execute without error
+- The Vuln Agent produces at least 1 EternalBlue hypothesis (MS17-010 /
+  CVE-2017-0144)
+- The Exploit Agent dispatches `msfagent` →
+  `exploit/windows/smb/ms17_010_eternalblue` via Metasploit RPC
+- A Meterpreter session is obtained (foothold recorded in final state)
+- The foothold's `method` field is `ms17_010`
+- The Phase 3 graph reaches the `done` or `postex` phase
+
+### Troubleshooting
+
+- **`MSF RPC login failed`** — `msfrpcd` isn't running, or the
+  password/port doesn't match the defaults in
+  `autored/tools/metasploit.py`. Restart `msfrpcd` with the exact
+  flags above.
+- **`exploit_failed` / no session** — `AUTORED_LHOST` is wrong (target
+  can't reach your VPN IP), or a firewall is blocking the reverse
+  shell on `LPORT=4444`. Verify with `tcpdump -i tun0 port 4444`.
+- **`No EternalBlue hypothesis`** — the Vuln Agent's Sonnet model didn't
+  identify MS17-010. Re-run; if it persists, check that nmap discovered
+  port 445 with the `ms17-010` script output.
