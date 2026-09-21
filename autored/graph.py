@@ -1,4 +1,4 @@
-"""LangGraph orchestrator (Phases 1–3).
+"""LangGraph orchestrator (Phases 1–4).
 
 Graph topologies::
 
@@ -21,6 +21,9 @@ Graph topologies::
     Phase 3:
         roe_gate_start ──> recon ──> vuln ──> exploit ──> report_phase1 ──> END
 
+    Phase 4:
+        roe_gate_start ──> recon ──> vuln ──> exploit ──> postex ──> report_phase1 ──> END
+
 Nodes
 -----
 * ``roe_gate_start`` — auto-registers the engagement's RoE with the
@@ -34,7 +37,14 @@ Nodes
   HitL gate event per hypothesis (auto-approved in sandbox mode),
   dispatches the approved exploit via one of 4 specialist sub-agents,
   verifies the foothold, and captures evidence. Always transitions to
-  ``report_phase1`` — Phase 4 will add the post-ex branch.
+  the next node — Phase 3 routes to ``report_phase1`` directly, Phase 4
+  routes through the ``postex`` node first.
+* ``postex`` — the Post-Ex Agent (see :mod:`autored.agents.postex`).
+  Phase 4+. Iterates the Exploit Agent's recorded footholds and runs
+  the six sub-activities (enumeration, privesc, persistence, evasion,
+  exfiltration, BloodHound) per foothold, with per-activity RoE
+  enforcement and HitL gates. Sets ``phase="lateral"`` on completion
+  so the Phase 5 Lateral-Movement Agent can pick the state up.
 * ``report_phase1`` — stub. Phase 1 only needs to know the recon loop is
   done; the full Report Agent ships in Phase 6.
 
@@ -53,6 +63,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from autored.agents.recon import recon_node
 from autored.agents.vuln import vuln_node
 from autored.agents.exploit import exploit_node
+from autored.agents.postex import postex_node
 from autored.state import EngagementState
 
 
@@ -217,4 +228,71 @@ def build_phase3_graph(checkpointer: AsyncSqliteSaver):
     # exploit_node via EventBus). The `exploit` node always transitions
     # to `report_phase1` regardless of foothold success — Phase 4 will
     # introduce the post-ex branch.
+    return graph.compile(checkpointer=checkpointer)
+
+
+def build_phase4_graph(checkpointer: AsyncSqliteSaver):
+    """Build the Phase 4 LangGraph:
+
+    ``roe_gate_start ──> recon ──> vuln ──> exploit ──> postex ──> report_phase1 ──> END``
+
+    Phase 4 inserts the Post-Ex Agent between Exploit and Report. The
+    Post-Ex Agent consumes the Exploit Agent's recorded footholds and
+    runs the six sub-activities (enumeration, privesc, persistence,
+    evasion, exfiltration, BloodHound) per foothold. Per-activity RoE
+    enforcement gates which sub-activities are even considered (e.g.
+    ``persistence_allowed=False`` short-circuits the whole persistence
+    sub-activity), and per-candidate HitL gates fire on privesc /
+    persistence / evasion / exfil attempts. In sandbox mode
+    (``hitl_mode == "auto_approve"``) the gates return immediately
+    without blocking; the events still flow through the EventBus for
+    audit / TUI replay.
+
+    Topology (linear — no conditional edges)::
+
+        roe_gate_start ──> recon ──> vuln ──> exploit ──> postex ──> report_phase1 ──> END
+
+    The ``postex`` node sets ``phase="lateral"`` on completion (so the
+    Phase 5 Lateral-Movement Agent can resume from the persisted state),
+    but the linear edge to ``report_phase1`` immediately afterwards
+    overwrites that with ``phase="done"`` — Phase 5 will replace the
+    ``postex → report_phase1`` edge with ``postex → lateral → report``
+    once the Lateral-Movement Agent ships. The Post-Ex sub-activity
+    fields (``local_users``, ``harvested_secrets``, ``trust_relationships``,
+    ``privesc_candidates``, ``privesc_attempts``, ``persistence_artifacts``,
+    ``evasion_actions``, ``exfiltration_proof``) survive the report stub
+    because it only updates ``phase``.
+
+    HitL gates are not modelled as LangGraph interrupts at the graph
+    level — same pattern as Phase 3's exploit node. They are handled
+    inside ``postex_node`` via the EventBus.
+
+    Args:
+        checkpointer: a LangGraph checkpointer (typically an
+            ``AsyncSqliteSaver``) enabling resume-after-crash semantics.
+
+    Returns:
+        A compiled ``StateGraph`` ready to ``.ainvoke(...)``.
+    """
+    graph = StateGraph(EngagementState)
+
+    graph.add_node("roe_gate_start", roe_gate_node)
+    graph.add_node("recon", recon_node)
+    graph.add_node("vuln", vuln_node)
+    graph.add_node("exploit", exploit_node)
+    graph.add_node("postex", postex_node)
+    graph.add_node("report_phase1", report_node_phase1)
+
+    graph.set_entry_point("roe_gate_start")
+    graph.add_edge("roe_gate_start", "recon")
+    graph.add_edge("recon", "vuln")
+    graph.add_edge("vuln", "exploit")
+    graph.add_edge("exploit", "postex")
+    graph.add_edge("postex", "report_phase1")
+    graph.add_edge("report_phase1", END)
+
+    # Phase 4: no HitL interrupts at graph level (handled inside
+    # postex_node via EventBus). The `postex` node always transitions
+    # to `report_phase1` regardless of foothold count — Phase 5 will
+    # introduce the lateral-movement branch when it ships.
     return graph.compile(checkpointer=checkpointer)
