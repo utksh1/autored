@@ -1,0 +1,36 @@
+/* Global TUI styling */
+App {
+    background: $surface;
+    color: $text;
+}
+
+/* Phase indicator gradient effect */
+PhaseIndicator {
+    color: $primary;
+    text-align: center;
+    padding: 0 1;
+}
+
+/* Activity log monospace */
+ActivityLog {
+    background: $panel;
+    border: solid $accent;
+    padding: 0 1;
+}
+
+/* HitL modal warning glow */
+HitLGateModal #gate-title {
+    text-style: bold;
+    text-align: center;
+}
+
+/* Findings table severity colors */
+DataTable > .datatable--header {
+    background: $primary;
+    color: $text;
+}
+
+/* Progress bar pulsing during active phase */
+ProgressBar {
+    color: $success;
+}
