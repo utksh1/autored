@@ -186,3 +186,88 @@ test passes if:
 - **`No EternalBlue hypothesis`** — the Vuln Agent's Sonnet model didn't
   identify MS17-010. Re-run; if it persists, check that nmap discovered
   port 445 with the `ms17-010` script output.
+
+## Phase 4 E2E Test (GoAD)
+
+Phase 4 adds the Post-Ex Agent (six sub-activities: enumeration, privesc,
+persistence, evasion, exfiltration, BloodHound). The Phase 4 E2E test
+runs recon + vuln + exploit + post-ex against a local **GoAD** lab
+([Game of Active Directory](https://github.com/Orange-Cyberdefense/GOAD))
+and asserts the Post-Ex Agent populates `local_users`,
+`harvested_secrets`, and `persistence_artifacts` on at least one
+foothold.
+
+### Prerequisites
+
+In addition to the Phase 3 prerequisites, you need:
+
+1. **GoAD lab running locally** — follow the
+   [GOAD install instructions](https://github.com/Orange-Cyberdefense/GOAD)
+   for vagrant-libvirt / virtualbox. The standard layout puts VMs on
+   `192.168.56.0/24`; the default target for this E2E test is
+   `192.168.56.22` (SRV02), override with `AUTORED_GOAD_TARGET`.
+2. **Phase 4 tool dependencies** — in addition to the Phase 3 toolset:
+   - `impacket`'s `secretsdump.py` (CredHarvester)
+   - `mimikatz` (CredHarvester on Windows footholds — runs via the
+     Meterpreter session, no local install needed on your box)
+   - `bloodhound-python` (BloodHound collection — install with
+     `pip install bloodhound-ce`)
+   - `linpeas.sh` / `winpeas.exe` (Enumeration sub-agents — the agent
+     uploads these to the foothold, so they must be on your local
+     `$PATH`)
+
+### Run the Phase 4 E2E test
+
+```bash
+# 1. Bring up GoAD (see GOAD repo for vagrant / ansible setup)
+cd GOAD && vagrant up
+
+# 2. Verify the GoAD target VM is reachable
+ping 192.168.56.22  # or whichever VM you're targeting first
+
+# 3. Start msfrpcd (see Phase 3 section above — keep it running)
+msfrpcd -P msf -p 55553 -a 127.0.0.1 -U msf -L
+
+# 4. Set env vars
+export ANTHROPIC_API_KEY=sk-ant-...
+export DEEPSEEK_API_KEY=sk-...
+export AUTORED_E2E=1
+export AUTORED_LHOST=192.168.56.1   # your VirtualBox host-only IP
+export AUTORED_GOAD_TARGET=192.168.56.22  # override as needed
+
+# 5. Run Phase 4 E2E test (use -s to see live findings + sub-activities)
+uv run pytest tests/e2e/test_phase4_goad.py -v -s
+```
+
+Expected runtime: 30–60 minutes (recon + vuln + exploit + 6 sub-activities
+per foothold). The test passes if:
+
+- Recon discovers at least 1 host (the GoAD target)
+- The Exploit Agent records at least 1 foothold (initial access)
+- The Post-Ex Agent's WindowsEnum sub-agent records at least 1 local user
+- The CredHarvester sub-agent harvests at least 1 secret (NTLM hash or
+  cleartext password)
+- The PersistenceAgent sub-agent installs at least 1 persistence
+  artifact on the foothold
+- The Phase 4 graph reaches the `done` phase
+
+### Post-run cleanup (IMPORTANT)
+
+The Phase 4 E2E test installs persistence artifacts on the GoAD lab
+(scheduled tasks, registry Run keys, etc.). Each artifact records its
+exact `removal_command` in the engagement's `state.json` — run those
+commands manually against the affected VMs before the next E2E run to
+avoid duplicate artifacts piling up:
+
+```bash
+# Find the engagement ID from the test output, then:
+python -c "
+import json
+state = json.load(open('engagements/<id>/state.json'))
+for a in state['persistence_artifacts']:
+    print(a['host_ip'], a['method'], '->', a['removal_command'])
+"
+```
+
+Then SSH / WinRM into each affected VM and run the printed commands.
+
