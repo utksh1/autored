@@ -1,0 +1,13 @@
+services:
+  neo4j:
+    image: neo4j:5.25-community
+    container_name: neo4j
+    ports:
+      - "7474:7474"  # browser UI
+      - "7687:7687"  # bolt
+    environment:
+      - NEO4J_AUTH=neo4j/autored_local_dev
+      - NEO4J_PLUGINS=["apoc","graph-data-science"]
+    volumes:
+      - ./db/neo4j/data:/data
+      - ./db/neo4j/logs:/logs
