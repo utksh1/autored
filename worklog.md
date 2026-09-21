@@ -1821,3 +1821,566 @@ Stage Summary:
 - Test status: full suite green — **133 passed, 2 skipped** (up from 132 passed / 1 skipped at Phase 2 Task 11 baseline).
 - Commits: `f3c5e19` (Task 12 integration test) and `3bae66b` (Task 13 E2E test + README) on top of `9daa945` (CLI Phase 2 switch).
 - Phase 2 is now SHIPPABLE: all 13 tasks complete, full pipeline verified end-to-end with mocks, E2E test scaffolded for live verification against HTB Shocker.
+
+---
+Task ID: P3-1
+Agent: implementer
+Task: Phase 3, Task 1 — Extend Models (Foothold + EngagementState + RoE Guard)
+
+Work Log:
+- Read worklog.md and the Phase 3 plan; located Task 1 spec at lines 123-265 of the plan.
+- Verified pre-task baseline: working tree had `tests/unit/models/test_foothold.py` deleted (orchestrator had reset it for fresh TDD); `pyproject.toml` and `uv.lock` already contained `msgpack==1.1.0` from the Phase 1-2 initial commit; `autored/models/foothold.py` did not exist; `autored/state.py` had no `footholds` field; `autored/roe_guard.py` already had `sqlmap_run: exploit` and `hydra_brute: brute_force` but was missing `medusa_brute`, `metasploit_rpc`, `custom_command`.
+- Step 1: Ran `uv add msgpack==1.1.0` — no-op (already in deps), no diff to `pyproject.toml`/`uv.lock`.
+- Step 2: Wrote `tests/unit/models/test_foothold.py` with the exact 4 tests from the plan (minimal, rejects_invalid_context, rejects_invalid_access_type, round_trip_json).
+- Step 3: Ran `uv run pytest tests/unit/models/test_foothold.py -v` — FAIL with `ModuleNotFoundError: No module named 'autored.models.foothold'` (as expected).
+- Step 4: Wrote `autored/models/foothold.py` — Foothold Pydantic BaseModel with `id`, `host_ip`, `username`, `context: Literal["user","root","system","service_account"]`, `method: str`, `access_type: Literal["shell","webshell","rpc","ssh","winrm"]`, `evidence_path`, `established_at: datetime`, `hypothesis_rank: int`.
+- Step 5: Updated `autored/models/__init__.py` — added `from autored.models.foothold import Foothold` and `"Foothold"` to `__all__`.
+- Step 6: Updated `autored/state.py` — imported `Foothold` from `autored.models` and added `footholds: list[Foothold] = Field(default_factory=list)` after `attack_hypotheses` (default_factory ensures existing state tests remain green).
+- Step 7: Updated `autored/roe_guard.py` `_categorize_call` dict — relabeled Phase 3 comment and added the three missing entries: `"medusa_brute": "brute_force"`, `"metasploit_rpc": "exploit"`, `"custom_command": "exploit"`. All 5 Phase 3 tools (`sqlmap_run`, `hydra_brute`, `medusa_brute`, `metasploit_rpc`, `custom_command`) are now mapped.
+- Step 8: Ran Foothold tests → 4 passed. Ran full suite (`uv run pytest --tb=no -q`) → **137 passed, 2 skipped** (133 baseline + 4 new Foothold tests), 0 regressions, 0 failures.
+- Sanity-checked imports/behavior with a quick Python script: Foothold importable from both `autored.models` and `autored.models.foothold`; `EngagementState.footholds` defaults to `[]`; state JSON round-trips correctly with a Foothold entry; all 5 Phase 3 tool names categorize as expected.
+- Step 9: Selective `git add` of only AutoRed files (`autored/models/foothold.py`, `autored/models/__init__.py`, `autored/state.py`, `autored/roe_guard.py`, `pyproject.toml`, `uv.lock`, `tests/unit/models/test_foothold.py`). Note: `pyproject.toml`/`uv.lock` had no diff (msgpack was already committed in the Phase 1-2 initial commit), and `tests/unit/models/test_foothold.py` was byte-identical to the version already in HEAD (orchestrator had pre-staged the plan's exact test content), so only 4 files actually changed. Committed as `0a7f495` with message `feat: add Foothold model and extend state for Phase 3`.
+
+Stage Summary:
+- Artifacts produced:
+  - New file `autored/models/foothold.py` (Foothold model).
+  - Updated `autored/models/__init__.py` (export Foothold).
+  - Updated `autored/state.py` (new `footholds: list[Foothold]` field, default empty list).
+  - Updated `autored/roe_guard.py` (added `medusa_brute`, `metasploit_rpc`, `custom_command` to `_categorize_call`).
+  - `tests/unit/models/test_foothold.py` (4 passing tests).
+- Decisions made: None beyond the plan's spec. The plan's exact code was used verbatim. The `footholds` field is placed after `attack_hypotheses` and uses `Field(default_factory=list)` so existing Phase 1/2 state tests continue to pass without modification.
+- Issues found: None. Baseline was 133 passed / 2 skipped; after this task it is 137 passed / 2 skipped — exactly the +4 expected from the new Foothold tests.
+- Deviations: Two minor observations, not blocking:
+  1. `msgpack==1.1.0` was already present in `pyproject.toml`/`uv.lock` from the Phase 1-2 initial commit (likely pre-staged by the orchestrator). Step 1's `uv add msgpack==1.1.0` was therefore a no-op. No action needed.
+  2. `tests/unit/models/test_foothold.py` was byte-identical to a version already in HEAD (also pre-staged). My rewrite produced no diff vs HEAD, so it did not appear in the commit's changed-file list. The test is fully present in the repo at the expected path with the expected content, and passes.
+- Test status: full suite green — **137 passed, 2 skipped**.
+- Commit: `0a7f495` on top of `e3e3629` (Phase 1-2 initial).
+- Ready for Phase 3 Task 2 (EventBus).
+
+---
+Task ID: P3-2
+Agent: implementer
+Task: Phase 3, Task 2 — EventBus (Orchestrator ↔ TUI Communication)
+
+Work Log:
+- Read worklog.md (full) to confirm Phase 3 Task 1 baseline: 137 passed / 2 skipped, `autored/models/foothold.py` + `state.footholds` + `roe_guard` Phase 3 tool categorization all in place.
+- Read the Phase 3 plan §Task 2 (lines 269–376) — EventBus dataclass with two `asyncio.Queue` fields and 4 methods (`emit_to_tui`, `emit_to_orchestrator`, `wait_for_tui_response`, `try_get_tui_event`).
+- Verified pre-task state: `autored/tui/` directory did not exist; `tests/unit/tui/` directory did not exist; `autored/logging.get_logger` exists and is the standard structlog wrapper (used by all other Phase 1/2 modules).
+- Step 1: Created `tests/unit/tui/` directory and wrote `tests/unit/tui/test_event_bus.py` with the exact 4 tests from the plan verbatim (test_event_bus_emit_and_receive, test_event_bus_tui_to_orchestrator, test_try_get_tui_event_empty, test_try_get_tui_event_returns_event). `@pytest.mark.asyncio` markers retained (redundant under `asyncio_mode = "auto"` but plan specifies them; no harm).
+- Step 2: Ran `uv run pytest tests/unit/tui/test_event_bus.py -v` → **collection error**: `ModuleNotFoundError: No module named 'autored.tui.event_bus'` (red phase as expected).
+- Step 3: Created `autored/tui/` directory; wrote `autored/tui/__init__.py` (empty) and `autored/tui/event_bus.py` (verbatim from plan — `@dataclass` EventBus with `orchestrator_to_tui` + `tui_to_orchestrator` `asyncio.Queue` fields using `field(default_factory=asyncio.Queue)`, and 4 methods; uses `autored.logging.get_logger("tui.event_bus")`).
+- Step 4: Created `tests/unit/tui/__init__.py` (empty).
+- Step 5: Ran `uv run pytest tests/unit/tui/test_event_bus.py -v` → **4 passed in 0.12s** (green). All 4 tests pass on the first run.
+- Regression check: `uv run pytest --tb=no -q` → **141 passed, 2 skipped in 11.66s** (137 baseline + 4 new EventBus tests = 141; the 2 skipped are the Phase 1 Lame + Phase 2 Shocker E2E tests gated on `AUTORED_E2E=1`). No regressions.
+- Step 6: Selective `git add autored/tui/__init__.py autored/tui/event_bus.py tests/unit/tui/__init__.py tests/unit/tui/test_event_bus.py` (worklog.md modification from Task 1 left unstaged — orchestrator handles worklog commit). Committed as `d0bce3d` with message `feat: add EventBus for orchestrator-TUI communication` (4 files, 67 insertions).
+
+Stage Summary:
+- Artifacts produced:
+  - New file `autored/tui/__init__.py` (empty package marker).
+  - New file `autored/tui/event_bus.py` — `EventBus` dataclass: 2 `asyncio.Queue` fields (`orchestrator_to_tui`, `tui_to_orchestrator`), 4 methods (`async emit_to_tui(event)`, `async emit_to_orchestrator(event)`, `async wait_for_tui_response()`, `try_get_tui_event() -> dict | None`). Uses `autored.logging.get_logger("tui.event_bus")` matching Phase 1/2 conventions. `try_get_tui_event` uses `get_nowait()` + `except asyncio.QueueEmpty: return None`.
+  - New file `tests/unit/tui/__init__.py` (empty package marker).
+  - New file `tests/unit/tui/test_event_bus.py` (4 passing async tests).
+- Decisions made: None beyond the plan's spec. Plan code used verbatim. The `@pytest.mark.asyncio` markers are redundant under `asyncio_mode = "auto"` (pyproject.toml line 40) but kept for plan fidelity and future-proofing against any tightening of pytest-asyncio defaults.
+- Issues found: None. The EventBus is a pure in-process asyncio primitive with no external dependencies; tests pass on the first run after implementation.
+- Deviations: None.
+- Test status: full suite green — **141 passed, 2 skipped** (up from 137 passed / 2 skipped at Phase 3 Task 1 baseline; +4 = the 4 new EventBus tests).
+- Commit: `d0bce3d` on top of `0a7f495` (Phase 3 Task 1 Foothold).
+- Ready for Phase 3 Task 3 (sqlmap tool wrapper).
+
+---
+Task ID: P3-3, P3-4, P3-5, P3-6
+Agent: implementer
+Task: Phase 3, Tasks 3-6 — Exploit tool wrappers (sqlmap, hydra, metasploit RPC, custom_command)
+
+Work Log:
+- Read worklog.md tail + Phase 3 plan §Tasks 3–6 (plan lines 380–1089). Confirmed baseline: Phase 3 Tasks 1–2 done (141 passed / 2 skipped); RoE guard already categorizes `sqlmap_run→exploit`, `hydra_brute→brute_force`, `metasploit_rpc→exploit`, `custom_command→exploit`; `msgpack==1.1.0` already in deps; `_save_raw` exported from `autored.tools.nmap`; decorator pattern is `@tool` outer + `@roe_guard(...)` inner (matches Phase 1/2 nvd/searchsploit).
+- Read `autored/tools/nmap.py` (full) to confirm the exact established pattern: `log = get_logger("tools.<x>")`, Pydantic models with `Field(default_factory=...)`, `run_subprocess(cmd, timeout=...)`, `await _save_raw("<tool>", target, stdout, stderr, engagement_id)`, parse, then backfill `raw_output_path` / `command` / `duration_sec` on the parsed result.
+
+**Task 3 — sqlmap tool wrapper:**
+- Step 1: Wrote `tests/fixtures/sqlmap_output.txt` verbatim from plan (47 requests, two injection types: boolean-based blind + time-based blind, MySQL >= 5.0 DBMS).
+- Step 2: Wrote `tests/unit/tools/test_sqlmap.py` with the 4 plan tests. **Deviation:** the plan's `test_parse_sqlmap_output_vulnerable` uses dict-style access `result.injection_points[0]["type"]`, but `injection_points` is `list[InjectionPoint]` (Pydantic models) so dict access raises `TypeError`. Changed to attribute access `result.injection_points[0].type`. This is a correctness fix to the plan's test code; the assertion intent is preserved.
+- Step 3: Ran test → `ModuleNotFoundError: No module named 'autored.tools.sqlmap'` (red as expected).
+- Step 4: Wrote `autored/tools/sqlmap.py` per plan — `InjectionPoint` + `SqlmapResult` models, `_build_sqlmap_cmd(url, options, output_dir)`, `_parse_sqlmap_output(text, url)`, `sqlmap_run` @tool @roe_guard(allowed_categories=["exploit"]).
+- Step 5: Ran tests → 3 passed, 1 FAILED: `test_parse_sqlmap_output_not_vulnerable`. Root cause: the plan's parser logic `if "injectable" in text.lower() or "injection point" in text.lower()` incorrectly marks the negative fixture text `"all tested parameters do not appear to be injectable"` as vulnerable (the substring "injectable" appears inside "do not appear to be injectable"). **Fix:** reordered the check to test for the canonical negative phrase `"do not appear to be injectable"` first; only fall through to the positive markers otherwise. Re-ran → **4 passed**.
+- Step 6: `git add autored/tools/sqlmap.py tests/unit/tools/test_sqlmap.py tests/fixtures/sqlmap_output.txt && git commit -m "feat: add sqlmap tool wrapper with injection point parser"` → commit `bea7a2c` (3 files, 148 insertions).
+
+**Task 4 — hydra tool wrapper:**
+- Step 1: Wrote `tests/fixtures/hydra_output.txt` verbatim from plan (two creds: root/toor + admin/admin123 on ssh against 10.10.10.5).
+- Step 2: Wrote `tests/unit/tools/test_hydra.py` with the 3 plan tests verbatim (build_cmd, parse_found, parse_not_found).
+- Step 3: Ran test → `ModuleNotFoundError: No module named 'autored.tools.hydra'` (red).
+- Step 4: Wrote `autored/tools/hydra.py` per plan — `BruteCredential` + `BruteResult` models, `_build_hydra_cmd(target, service, users_file, pass_file)` returning `["hydra", "-L", users_file, "-P", pass_file, "-f", f"{service}://{target}"]`, `_parse_hydra_output(text, target, service)` with the `[22][ssh] host: X login: Y password: Z` regex, `hydra_brute` @tool @roe_guard(allowed_categories=["brute_force"]) with 3600s timeout.
+- Step 5: Ran tests → **3 passed** on first run (the plan's `if "successfully completed" in text and "0 valid passwords" not in text` logic correctly handles both the positive fixture and the negative "0 valid passwords" text).
+- Step 6: `git add ... && git commit -m "feat: add hydra brute force tool wrapper"` → commit `c1fd363` (3 files, 117 insertions).
+
+**Task 5 — Metasploit RPC tool (most complex):**
+- Step 1: Wrote `tests/unit/tools/test_metasploit.py` with the 4 plan tests. **Deviation (critical):** the plan's `test_msf_login` uses mock response content `b"\x92\xa3tmp_token"` with the comment `# msgpack encoded ["tmp_token"]`. Verified via `uv run python -c "import msgpack; msgpack.unpackb(b'\x92\xa3tmp_token', raw=False)"` → raises `msgpack.exceptions.ExtraData: unpack(b) received extra data.` The bytes are malformed: `\x92` is fixarray-length-2 but only 1 element follows (`\xa3` = fixstr-length-3 = "tmp", then "_token" is leftover bytes). Even if leniently decoded via streaming Unpacker, the result is `[['tmp', 95], 116, 111, 107, 101, 110]` — garbage. No implementation of `login()` could make the test pass with these mock bytes. Changed the mock bytes to `b"\x92\xaaauth.login\xa9tmp_token"` which is the correct msgpack encoding of `["auth.login", "tmp_token"]` — matching real msfrpcd's `[method, token]` response format (which the plan's login() comment explicitly references: "token is typically the second element of the response"). This is the smallest change that: (a) makes the test pass with the plan's login() logic AS-IS, (b) matches real msfrpcd protocol behavior, (c) aligns with the plan's `token[1]` branch in login(). Updated the comment to reflect what's actually encoded.
+- Step 2: Ran test → `ModuleNotFoundError: No module named 'autored.tools.metasploit'` (red).
+- Step 3: Wrote `autored/tools/metasploit.py` per plan — `MsfResult` model, `MsfRpcClient` class with `_call`/`login`/`execute_exploit`/`list_sessions`/`check_session`, and `metasploit_rpc` @tool @roe_guard(allowed_categories=["exploit"]). Two small additions beyond the plan: (a) in `_call`, branched on `method == "auth.login"` to pack `[method, *args]` (no token) vs `[method, self.token, *args]` (with token) — the plan's ternary `[method, self.token, *args] if self.token else [method, *args]` is functionally equivalent but the explicit branch is clearer; (b) in `login()`, added a `len(token) == 1` branch that takes `token[0]` as a defensive fallback (the plan only handles `len >= 2`, `str`, and `else: str(token)`). Neither addition changes behavior for the test cases — they only add robustness for edge cases (e.g., a hypothetical 1-element auth response).
+- Step 4: Ran tests → **4 passed** on first run. The Review Focus test (`test_msf_execute_exploit`) passes: the mock's `__aenter__` side_effect=ConnectionRefusedError propagates cleanly through `_call` → `execute_exploit` → test (no hang, no swallow).
+- Step 5: `git add ... && git commit -m "feat: add Metasploit RPC tool wrapper with msgpack protocol"` → commit `d44872c` (2 files, 241 insertions).
+
+**Task 6 — custom_command tool:**
+- Step 1: Wrote `tests/unit/tools/test_custom.py` verbatim from plan (1 test: `test_custom_result_model` — constructs `CustomResult` and asserts `success is True` + `stdout == "root\n"`).
+- Step 2: Ran test → `ModuleNotFoundError: No module named 'autored.tools.custom'` (red).
+- Step 3: Wrote `autored/tools/custom.py` per plan — `CustomResult` model with `command`/`stdout`/`stderr`/`returncode`/`success`/`raw_output_path`/`duration_sec`, `custom_command` @tool @roe_guard(allowed_categories=["exploit"]) that does `shlex.split(command)` → `run_subprocess(cmd_list, timeout=600)` → `_save_raw("custom", command, ...)` → returns `CustomResult` with `success = (returncode == 0)`. Moved `import shlex` to module top (plan had it inline in the function body — minor style improvement, no behavior change).
+- Step 4: Ran test → **1 passed** on first run.
+- Step 5: `git add ... && git commit -m "feat: add custom command tool for approved arbitrary commands"` → commit `d4ea80b` (2 files, 70 insertions).
+
+Stage Summary:
+- Artifacts produced:
+  - `autored/tools/sqlmap.py` — `InjectionPoint` + `SqlmapResult` models, `_build_sqlmap_cmd`, `_parse_sqlmap_output`, `sqlmap_run` @tool @roe_guard(["exploit"]). Regex parser extracts (parameter, method, type, title, payload) per injection point; DBMS extracted via `back-end DBMS:\s*(.+)`. Negative-marker-aware vulnerability detection.
+  - `autored/tools/hydra.py` — `BruteCredential` + `BruteResult` models, `_build_hydra_cmd`, `_parse_hydra_output`, `hydra_brute` @tool @roe_guard(["brute_force"]). Credential regex: `\[\d+\]\[\w+\]\s+host:\s+\S+\s+login:\s+(\S+)\s+password:\s+(\S+)`. 3600s timeout (brute force is slow).
+  - `autored/tools/metasploit.py` — `MsfResult` model, `MsfRpcClient` class (`_call`/`login`/`execute_exploit`/`list_sessions`/`check_session`), `metasploit_rpc` @tool @roe_guard(["exploit"]). Uses `msgpack.packb`/`unpackb` for MessagePack over HTTP to msfrpcd at `http://<host>:<port>/api/`. Uses `httpx.AsyncClient(timeout=60)`. Connection errors propagate cleanly (no hang/swallow) — verified by Review Focus test.
+  - `autored/tools/custom.py` — `CustomResult` model, `custom_command` @tool @roe_guard(["exploit"]). Uses `shlex.split` + `run_subprocess` (600s timeout). The HitL-approved escape hatch for exploits that don't fit the other 3 tools.
+  - 3 fixtures (`tests/fixtures/sqlmap_output.txt`, `tests/fixtures/hydra_output.txt`; Metasploit uses inline mock bytes, no fixture file).
+  - 4 test files (12 new tests total: 4 sqlmap + 3 hydra + 4 metasploit + 1 custom).
+- Decisions / deviations from the plan:
+  1. **sqlmap test fix (correctness):** Changed `result.injection_points[0]["type"]` → `result.injection_points[0].type` because `injection_points` is a list of Pydantic `InjectionPoint` models, not dicts. Dict-style access would raise `TypeError: 'InjectionPoint' object is not subscriptable` with a string key. The plan's test code was syntactically wrong for the plan's own model definition.
+  2. **sqlmap parser fix (correctness):** Reordered the vulnerability-detection check in `_parse_sqlmap_output` to test for the canonical negative phrase `"do not appear to be injectable"` BEFORE testing for `"injectable"` / `"injection point"`. The plan's logic marked the not-vulnerable fixture as vulnerable because the substring "injectable" appears inside "do not appear to be injectable". The reordered check makes both plan tests pass and is more faithful to sqlmap's actual output conventions.
+  3. **metasploit test mock fix (correctness, critical):** The plan's `test_msf_login` used `b"\x92\xa3tmp_token"` claiming it encoded `["tmp_token"]`. Verified empirically that these bytes are malformed msgpack (`ExtraData` exception from `msgpack.unpackb`). Replaced with `b"\x92\xaaauth.login\xa9tmp_token"` which correctly encodes `["auth.login", "tmp_token"]` — matching real msfrpcd's `[method, token]` response format (which the plan's own login() comment references: "token is typically the second element of the response"). This is the smallest change that: (a) makes the test green with the plan's login() logic unchanged, (b) matches real msfrpcd protocol, (c) preserves the test's intent (asserting that `login()` extracts `"tmp_token"` as the token).
+  4. **metasploit impl minor additions (robustness, non-breaking):** (a) `_call` uses an explicit `if method == "auth.login"` branch instead of the plan's ternary — functionally identical, clearer to read. (b) `login()` adds a `len(token) == 1` branch taking `token[0]` as a defensive fallback for hypothetical 1-element auth responses; doesn't change behavior for any test case. Neither addition deviates from the plan's intent.
+  5. **custom impl style (cosmetic):** Moved `import shlex` to module top (plan had it inline). No behavior change.
+- Bugs found: 3 bugs in the plan's Task 3/5 test code (sqlmap dict-access syntax, sqlmap parser substring overlap, metasploit malformed mock bytes). All fixed during implementation; documented above. No bugs in the plan's implementation code itself.
+- Test status: full suite green — **153 passed, 2 skipped** (up from 141 passed / 2 skipped at Phase 3 Task 2 baseline; +12 = 4 sqlmap + 3 hydra + 4 metasploit + 1 custom). No regressions.
+- Commits (4, one per task, in order on top of `d0bce3d` Phase 3 Task 2):
+  - `bea7a2c` — feat: add sqlmap tool wrapper with injection point parser
+  - `c1fd363` — feat: add hydra brute force tool wrapper
+  - `d44872c` — feat: add Metasploit RPC tool wrapper with msgpack protocol
+  - `d4ea80b` — feat: add custom command tool for approved arbitrary commands
+- Ready for Phase 3 Task 7 (SQLiAgent Sub-Agent) — it consumes `sqlmap_run` (Task 3) and the `SqlmapResult`/`InjectionPoint` models.
+
+---
+Task ID: P3-7, P3-8
+Agent: implementer
+Task: Phase 3, Tasks 7-8 — Implement the 4 exploit sub-agents (SQLiAgent, BruteAgent, MSFAgent, CustomAgent) that wrap the Phase 3 Task 3-6 tools.
+
+Work Log:
+- Read worklog.md and confirmed Phase 3 Tasks 1-6 baseline: 153 passed / 2 skipped; `bea7a2c` (sqlmap), `c1fd363` (hydra), `d44872c` (metasploit), `d4ea80b` (custom) all committed.
+- Read Phase 3 plan §Task 7 (lines 1093-1184) and §Task 8 (lines 1188-1419) verbatim.
+- Read `autored/subagents/portscan.py` and `tests/unit/subagents/test_portscan.py` to confirm the established pattern: `@tool`-decorated async function, `.ainvoke({"...": ...})` call site, `patch("autored.subagents.<name>.<tool_fn>")` + `mock.<tool>.ainvoke = AsyncMock(return_value=...)` in tests. Task 7/8 sub-agents are thin wrappers (single `.ainvoke` + log) so even simpler than portscan.
+- Read the 4 Phase 3 tool modules (`autored/tools/{sqlmap,hydra,metasploit,custom}.py`) to confirm tool names, signatures, and result model field names — needed for accurate `ainvoke` payloads and log field references:
+  - `sqlmap_run(url, options=None, engagement_id="")` → `SqlmapResult(vulnerable, injection_points, ...)`
+  - `hydra_brute(target, service, usernames_file, passwords_file, engagement_id="")` → `BruteResult(success, credentials, ...)`
+  - `metasploit_rpc(method, params, engagement_id="")` → `MsfResult(success, data, error, ...)` — MSFAgent wraps it with `method="execute_exploit"` and constructs `params` dict from `(module, target, payload, lhost, lport, options)`.
+  - `custom_command(command, engagement_id="")` → `CustomResult(success, stdout, ...)`
+- Verified `autored/logging.py` exports `get_logger` (line 30). Verified `langchain_core.tools.tool` import pattern matches portscan.py.
+
+**Task 7 — SQLiAgent sub-agent:**
+- Step 1: Wrote `tests/unit/subagents/test_sqliagent.py` verbatim from plan (1 test: `test_sqliagent_calls_sqlmap` — patches `autored.subagents.sqliagent.sqlmap_run`, asserts `result.vulnerable is True` and `len(result.injection_points) == 1`).
+- Step 2: Ran test → `ModuleNotFoundError: No module named 'autored.subagents.sqliagent'` (red as expected).
+- Step 3: Wrote `autored/subagents/sqliagent.py` per plan — `@tool`-decorated `sqliagent_subagent(url, options=None, engagement_id="")` that calls `await sqlmap_run.ainvoke({"url": url, "options": options, "engagement_id": engagement_id})` and returns the `SqlmapResult` unchanged. Logs `sqliagent_start` / `sqliagent_done` with `url` + `vulnerable` fields.
+- Step 4: Ran test → **1 passed** on first run (no deviations needed).
+- Step 5: `git add autored/subagents/sqliagent.py tests/unit/subagents/test_sqliagent.py && git commit -m "feat: add SQLiAgent sub-agent wrapping sqlmap"` → commit `29e8b91` (2 files, 57 insertions).
+
+**Task 8 — BruteAgent + MSFAgent + CustomAgent sub-agents:**
+- Step 1: Wrote all 3 test files verbatim from plan:
+  - `tests/unit/subagents/test_bruteagent.py` (1 test: `test_bruteagent_calls_hydra` — patches `autored.subagents.bruteagent.hydra_brute`, asserts `success is True` + 1 cred).
+  - `tests/unit/subagents/test_msfagent.py` (2 tests: `test_msfagent_executes_exploit` asserts success path; `test_msfagent_handles_rpc_unreachable` is the Review Focus test — mocks `metasploit_rpc` to return `MsfResult(success=False, error="Connection refused")` and asserts `result.success is False` and `"Connection refused" in result.error`).
+  - `tests/unit/subagents/test_customagent.py` (1 test: `test_customagent_executes_command` — patches `autored.subagents.customagent.custom_command`, asserts `success is True` + `"root" in result.stdout`).
+- Step 2: Ran all 3 → 3 collection errors (`ModuleNotFoundError: No module named 'autored.subagents.{bruteagent,msfagent,customagent}'`) — red as expected.
+- Step 3: Wrote all 3 sub-agents per plan:
+  - `autored/subagents/bruteagent.py` — `@tool bruteagent_subagent(target, service, usernames_file, passwords_file, engagement_id="")` → `BruteResult`. Calls `hydra_brute.ainvoke({"target":..., "service":..., "usernames_file":..., "passwords_file":..., "engagement_id":...})`.
+  - `autored/subagents/msfagent.py` — `@tool msfagent_subagent(module, target, payload, lhost, lport, options=None, engagement_id="")` → `MsfResult`. Calls `metasploit_rpc.ainvoke({"method": "execute_exploit", "params": {"module":..., "target":..., "payload":..., "lhost":..., "lport":..., "options":...}, "engagement_id":...})`. Crucially, this sub-agent just propagates the `MsfResult` returned by the tool — so when the tool returns `success=False, error="Connection refused"` (the RPC-unreachable path tested at the tool level in Phase 3 Task 5), the sub-agent forwards it verbatim. No swallow, no retry, no hang.
+  - `autored/subagents/customagent.py` — `@tool customagent_subagent(command, engagement_id="")` → `CustomResult`. Calls `custom_command.ainvoke({"command": command, "engagement_id": engagement_id})`.
+- Step 4: Ran all 3 test files → **4 passed** (1 + 2 + 1) on first run. The Review Focus test (`test_msfagent_handles_rpc_unreachable`) passed cleanly: the sub-agent's transparent pass-through of `MsfResult` makes the error propagation automatic.
+- Step 5: `git add ... && git commit -m "feat: add BruteAgent, MSFAgent, and CustomAgent sub-agents"` → commit `ff85653` (6 files, 190 insertions).
+- Final regression check: `uv run pytest --tb=no -q` → **158 passed, 2 skipped** (153 baseline + 5 new = 158, no regressions, no failures).
+
+Stage Summary:
+- Artifacts produced:
+  - `autored/subagents/sqliagent.py` — thin `@tool` wrapper around `sqlmap_run` (30 lines).
+  - `autored/subagents/bruteagent.py` — thin `@tool` wrapper around `hydra_brute` (33 lines).
+  - `autored/subagents/msfagent.py` — thin `@tool` wrapper around `metasploit_rpc` with `method="execute_exploit"` and structured `params` dict (38 lines).
+  - `autored/subagents/customagent.py` — thin `@tool` wrapper around `custom_command` (26 lines).
+  - 4 test files (5 new tests total: 1 sqli + 1 brute + 2 msf incl. Review Focus + 1 custom).
+- Decisions / deviations from the plan: **none.** All four sub-agents and all five tests implemented verbatim from the plan. The pattern is identical to Phase 1/2 sub-agents (e.g., portscan.py) but thinner: each is a single `.ainvoke` call that forwards the tool's result unchanged (no orchestration logic like portscan's two-stage naabu→nmap flow). The MSFAgent's RPC-unreachable handling is automatic because the sub-agent simply returns whatever `metasploit_rpc.ainvoke` returns — and Task 5's tool-level implementation already returns `MsfResult(success=False, error=str(e))` on connection errors. This is the correct separation of concerns: the tool handles the protocol/transport error, the sub-agent just relays it.
+- Bugs found: none. All 5 tests green on first run; no plan code fixes needed.
+- Test status: full suite green — **158 passed, 2 skipped** (up from 153 passed / 2 skipped at Phase 3 Task 6 baseline; +5 = 1 sqli + 1 brute + 2 msf + 1 custom). No regressions.
+- Commits (2, in order on top of `d4ea80b` Phase 3 Task 6):
+  - `29e8b91` — feat: add SQLiAgent sub-agent wrapping sqlmap
+  - `ff85653` — feat: add BruteAgent, MSFAgent, and CustomAgent sub-agents
+- Ready for Phase 3 Task 9 (Exploit Agent Node — LangGraph) — it consumes all 4 of these sub-agents plus the EventBus (Task 2).
+
+---
+Task ID: P3-9
+Agent: implementer
+Task: Exploit Agent Node (LangGraph) — Phase 3, Task 9
+
+Work Log:
+- Read worklog.md and the Phase 3 plan file (lines 1423-1876). Reviewed
+  `autored/agents/recon.py` and `autored/agents/vuln.py` for the
+  established "import sub-agent modules so test patches propagate"
+  pattern, and `autored/tui/event_bus.py` for the EventBus interface.
+- Step 1: Created `tests/fixtures/llm_responses/exploit_plan_blue.json`
+  (single `msfagent` tool_call targeting EternalBlue on 10.10.10.40).
+- Step 2: Wrote `tests/integration/test_exploit_agent.py` with 4 tests
+  verbatim from the plan: `test_exploit_node_achieves_foothold`,
+  `test_exploit_node_rejection_skips_to_next`,
+  `test_exploit_node_all_hypotheses_exhausted`,
+  `test_exploit_node_sandbox_auto_approve`.
+- Step 3: Ran `uv run pytest tests/integration/test_exploit_agent.py -v`
+  → collection error: `ModuleNotFoundError: No module named
+  'autored.agents.exploit'` (red phase verified).
+- Step 4: Wrote `autored/agents/exploit.py` (full implementation):
+  - `EXPLOIT_PLAN_PROMPT` (verbatim from plan)
+  - `exploit_node(state)` — sorts hypotheses by rank, iterates with
+    HitL gate, plans, dispatches, verifies, builds foothold or
+    falls through to "all exhausted" error return.
+  - `_hitl_gate(hypothesis, state, bus)` — emits `hitl_gate` event,
+    short-circuits on `auto_approve` (returns `(True, None)` without
+    blocking), else blocks on `bus.wait_for_tui_response()`. Handles
+    approve/edit/reject/skip/abort responses.
+  - `_plan_exploit_execution(hypothesis, modified_command, state)` —
+    calls `get_model("plan_exploit")` with the prompt, parses JSON.
+  - `_parse_plan(content)` — strips markdown fences, JSON-failure → `[]`.
+  - `_dispatch_exploit_subagent(tool, tool_calls, state)` — routes each
+    tool call to the right sub-agent via module attribute lookup
+    (`_msfagent_mod.msfagent_subagent.ainvoke(...)` etc.) so test
+    patches on `autored.subagents.<x>.<tool_name>` propagate through.
+    Empty `tool_calls` → `{"success": False, "error": "No tool calls
+    in plan"}`.
+  - `_verify_foothold(result, state)` — Review Focus #5: does NOT
+    trust `success` alone. Checks for `session_id`/`sessions` in MSF
+    data, non-empty `credentials` for brute, `vulnerable + injection_points`
+    for sqlmap.
+  - `_build_foothold(hypothesis, result, state)` — builds Foothold
+    record (id, host_ip, username="unknown", context="user",
+    access_type="shell", evidence_path, established_at, hypothesis_rank).
+  - `_derive_method_name(hypothesis)` — NEW HELPER. Extracts a short
+    method identifier (e.g. `"ms17_010"`) from `tool_module`/`technique`
+    via `ms\d+[-_]?\d+` regex; falls back to `tool_module`'s last
+    segment, then `hypothesis.tool`, then `technique`.
+  - `_extract_evidence(result)` — collects `raw_output_path` entries
+    from result sub-dicts.
+- Step 5: Ran `uv run pytest tests/integration/test_exploit_agent.py -v`
+  → 3 of 4 tests passed on first attempt. The rejection test failed
+  with `KeyError: 'footholds'` because the plan's "all exhausted"
+  return dict omits the `footholds` key. Added `"footholds":
+  state.footholds,` to that return (sensible no-op — keeps the key
+  present for callers/tests). Re-ran → **4 passed**.
+- Ran full suite: `uv run pytest -q` → **162 passed, 2 skipped**
+  (158 baseline + 4 new Task 9 tests; 2 E2E tests skipped as before).
+  No regressions.
+- Step 6: Selective `git add` of `autored/agents/exploit.py`,
+  `autored/state.py`, `tests/integration/test_exploit_agent.py`,
+  `tests/fixtures/llm_responses/exploit_plan_blue.json`. Committed as
+  `0d4ee7d` with message `feat: add Exploit Agent with HitL gates and
+  foothold verification`.
+
+Stage Summary:
+- Artifacts produced:
+  - `autored/agents/exploit.py` — Exploit Agent LangGraph node with
+    HitL gates, LLM planning, sub-agent dispatch, foothold
+    verification, and "all exhausted" error fallback.
+  - `tests/integration/test_exploit_agent.py` — 4 passing integration
+    tests (1 happy path + 3 Review Focus scenarios).
+  - `tests/fixtures/llm_responses/exploit_plan_blue.json` — LLM
+    response fixture with a single `msfagent` tool call for
+    EternalBlue.
+  - `autored/state.py` — added `event_bus: Any = Field(default=None,
+    exclude=True)` field (see deviations below).
+
+- Decisions / deviations from the plan:
+  1. **`EngagementState.event_bus` field added** (deviation). The plan
+     says the test fixture sets `state.event_bus = EventBus()` after
+     construction, but Pydantic v2 raises `ValueError: "EngagementState"
+     object has no field "event_bus"` on attribute assignment by
+     default. Added `event_bus: Any = Field(default=None, exclude=True)`
+     so the test fixture works AND `model_dump()` / `model_dump_json()`
+     skip the non-serialisable EventBus (keeps the SQLite checkpointer
+     happy). All 158 pre-existing tests still pass.
+  2. **`_build_foothold` uses a derived short method name** (deviation).
+     The plan's `_build_foothold` sets `method=hypothesis.technique`
+     (which would be `"EternalBlue (MS17-010)"`), but the happy-path
+     test asserts `result["footholds"][0].method == "ms17_010"`. Added
+     a `_derive_method_name(hypothesis)` helper that extracts an
+     `ms\d+_\d+` pattern from `tool_module`/`technique` (so
+     `exploit/windows/smb/ms17_010_eternalblue` → `ms17_010`), falling
+     back to `tool_module`'s last path segment, then `hypothesis.tool`,
+     then `technique`. Aligns with the Foothold model's documented
+     `method` format ("ms17_010", "sqli", "ssh_brute", etc.).
+  3. **"All exhausted" return now includes `footholds` key** (deviation).
+     The plan's "all exhausted" return dict omits `footholds`, but
+     `test_exploit_node_rejection_skips_to_next` asserts
+     `len(result["footholds"]) == 0`. Added `"footholds":
+     state.footholds,` to that return — a sensible no-op that keeps
+     the return shape consistent with the success path.
+
+- Integration bugs found:
+  - The plan's verbatim test code assumes `state.event_bus =
+    EventBus()` works on a default Pydantic v2 model — it doesn't.
+    Fixed by declaring the field on `EngagementState` with
+    `exclude=True`.
+  - The plan's verbatim `_build_foothold` would have failed the
+    happy-path test's `method == "ms17_010"` assertion. Fixed by
+    adding the `_derive_method_name` helper.
+  - The plan's verbatim "all exhausted" return dict is missing the
+    `footholds` key, causing a KeyError in the rejection test. Fixed
+    by including `"footholds": state.footholds`.
+
+- Test results: 4/4 passing in `tests/integration/test_exploit_agent.py`
+  in 0.69s. Full suite: 162 passed, 2 skipped.
+
+---
+Task ID: P3-10
+Agent: implementer
+Task: TUI App + DashboardScreen + widgets — Phase 3, Task 10
+
+Work Log:
+- Read worklog.md and the Phase 3 plan file (lines 1880-1968). Reviewed
+  spec §17.4 (lines 2931-3366) for the concrete TUI implementation.
+  Confirmed `textual==0.79.1` was NOT installed (only declared in
+  pyproject's intent); ran `uv add textual==0.79.1` to install it
+  (also pulled linkify-it-py, mdit-py-plugins, platformdirs as transitive
+  deps). Updated `pyproject.toml` and `uv.lock`.
+- Step 1: Wrote `tests/unit/tui/test_app.py` (2 tests: app_launches,
+  app_quit_keybinding) and `tests/unit/tui/test_widgets.py` (4 tests:
+  phase_indicator_renders, phase_indicator_update,
+  agent_status_renders_empty, activity_log_add_event) verbatim from
+  the plan, with one deviation: removed `from textual.testing import
+  Pilot` (that module does not exist in textual 0.79.1; the import was
+  unused — `app.run_test()` returns the Pilot automatically). Verified
+  red phase: `ModuleNotFoundError: No module named 'autored.tui.app'`
+  and `... autored.tui.widgets.phase_indicator`.
+- Step 2: Implemented TUI files (following spec §17.4 closely):
+  - `autored/tui/app.py` — `AutoRedApp(App)` with CSS_PATH="app.tcss",
+    TITLE="AutoRed", SUB_TITLE="Red Team Copilot", BINDINGS q/d/h/?,
+    SCREENS {dashboard, help}, `__init__(engagement_id)` stores id and
+    creates an `EventBus`. `on_mount` pushes DashboardScreen.
+  - `autored/tui/app.tcss` — global styles (App, PhaseIndicator,
+    ActivityLog, HitLGateModal #gate-title, DataTable header, ProgressBar).
+  - `autored/tui/screens/__init__.py`, `autored/tui/widgets/__init__.py`
+    — package markers.
+  - `autored/tui/screens/dashboard.py` — `DashboardScreen(Screen)` with
+    PhaseIndicator + AgentStatusPanel + ActivityLog + ProgressBar,
+    polls EventBus via `set_interval(0.5, self._poll_events)`,
+    handles phase_change/agent_start/tool_call/hitl_gate/error events,
+    `_handle_hitl_response` forwards to `event_bus.tui_to_orchestrator`.
+  - `autored/tui/screens/help.py` — minimal `HelpScreen(Screen)` with
+    keybindings and phases reference.
+  - `autored/tui/widgets/phase_indicator.py` — `PhaseIndicator(Static)`
+    with PHASES/PHASE_EMOJI and `update_phase(phase)`.
+  - `autored/tui/widgets/agent_status.py` — `AgentStatusPanel(Static)`
+    with reactive agent_name/task_description/started_at/tool_calls/
+    llm_calls and `update_agent(event)`.
+  - `autored/tui/widgets/activity_log.py` — `ActivityLog(RichLog)`
+    with `add_event(event)` and `add_error(event)`.
+- Step 3: Ran tests — 3 of 6 failed:
+  1. `test_app_launches` / `test_app_quit_keybinding` — CSS tokenizer
+     error: `unknown pseudo-class '-running'` (spec's
+     `ProgressBar:-running` is not in textual 0.79.1's VALID_PSEUDO_CLASSES
+     list). Fixed by changing `ProgressBar:-running` → `ProgressBar` in
+     `app.tcss` (lost the "running-only" qualifier but kept the green
+     color hint).
+  2. `test_activity_log_add_event` — `NoActiveAppError` from
+     `RichLog.write` (which calls `self.app.console` to render the
+     renderable; raises when no active app). Fixed by adding
+     `is_mounted` guard + `_pending_lines` buffer in `ActivityLog`;
+     events emitted while unmounted are buffered and flushed in
+     `on_mount()`. The unit test instantiates `ActivityLog()` outside
+     of an app context, so this guard is required.
+- Step 4: Re-ran — **6 passed**. Full suite: **168 passed, 2 skipped**
+  (162 baseline + 6 new TUI tests). No regressions.
+- Step 5: Selective `git add` of all 9 new TUI files + 2 test files +
+  `pyproject.toml` + `uv.lock`. Committed as `4957c51` with message
+  `feat: add basic TUI with DashboardScreen and widgets`.
+
+Stage Summary:
+- Artifacts produced:
+  - `autored/tui/app.py` — AutoRedApp (Textual App) entry point.
+  - `autored/tui/app.tcss` — global TUI stylesheet.
+  - `autored/tui/screens/__init__.py`, `dashboard.py`, `help.py` —
+    DashboardScreen (with EventBus polling + HitL modal dispatch) and
+    HelpScreen.
+  - `autored/tui/widgets/__init__.py`, `phase_indicator.py`,
+    `agent_status.py`, `activity_log.py` — three reusable dashboard
+    widgets.
+  - `tests/unit/tui/test_app.py` (2 passing tests).
+  - `tests/unit/tui/test_widgets.py` (4 passing tests).
+  - `pyproject.toml` / `uv.lock` — added `textual==0.79.1`.
+
+- Decisions / deviations from the plan/spec:
+  1. **Removed unused `textual.testing.Pilot` import from tests**
+     (deviation). That module does not exist in textual 0.79.1; the
+     import was unused. `app.run_test()` returns the Pilot
+     automatically.
+  2. **`DashboardScreen` extends `Screen`, not `Container`**
+     (deviation). Spec §17.4 has `class DashboardScreen(Container)`,
+     but `Screen` and `Container` are siblings in textual's widget
+     hierarchy (both extend Widget directly). `push_screen` requires a
+     `Screen` subclass — using `Container` would raise
+     `ScreenStackError` at runtime. Changed base class to `Screen`.
+  3. **`AutoRedApp` uses `EventBus`, not `asyncio.Queue`** (per the
+     task instructions, which override the spec). `__init__` creates
+     `self.event_bus = EventBus()` (the existing class from
+     `autored/tui/event_bus.py`). DashboardScreen receives the EventBus
+     and polls it via `try_get_tui_event()`. `_handle_hitl_response`
+     forwards the operator's response to
+     `event_bus.tui_to_orchestrator` (instead of the spec's
+     non-existent `self.app.orchestrator_response_queue`).
+  4. **`app.tcss`: `ProgressBar:-running` → `ProgressBar`** (deviation).
+     The `:-running` pseudo-class is not in textual 0.79.1's
+     VALID_PSEUDO_CLASSES; the CSS tokenizer raises a TokenError. Used
+     the bare `ProgressBar` selector to keep the green color hint.
+  5. **`ActivityLog` buffers events when unmounted** (deviation).
+     Textual's `RichLog.write` requires `self.app.console` to render
+     the renderable, which raises `NoActiveAppError` when called
+     outside an app context. The unit test instantiates `ActivityLog()`
+     bare. Added an `is_mounted` guard + `_pending_lines` buffer +
+     `on_mount` flush. Same guard applied to `add_error`.
+  6. **`AutoRedApp.BINDINGS` reduced to q/d/h/?** (per task
+     instructions). Spec has 6 bindings (q/d/h/e/l/?); the task
+     instructions explicitly list only q/d/h/?. Removed `e` (engagements)
+     and `l` (logs) — those screens are Phase 6 additions.
+  7. **HitLGateModal import is lazy in dashboard.py** (deviation). The
+     spec's dashboard.py uses `HitLGateModal(event)` without importing
+     it. To keep Task 10 (dashboard) self-contained before Task 11
+     (HitLGateModal) lands, the import is inside `_handle_event`'s
+     `hitl_gate` branch.
+
+- Test results: 6/6 passing in `tests/unit/tui/test_app.py` +
+  `tests/unit/tui/test_widgets.py` in 0.7s. Full suite: 168 passed,
+  2 skipped.
+
+---
+Task ID: P3-11
+Agent: implementer
+Task: HitLGateModal — Phase 3, Task 11
+
+Work Log:
+- Read worklog.md and the Phase 3 plan file (lines 1970-2062). Reviewed
+  spec §17.4 (lines 3096-3242) for the HitLGateModal concrete
+  implementation.
+- Step 1: Wrote `tests/unit/tui/test_hitl_gate.py` with 3 tests
+  verbatim from the plan (test_hitl_gate_approve with 'y',
+  test_hitl_gate_reject with 'n', test_hitl_gate_skip with 's').
+  Removed the unused `from textual.testing import Pilot` import
+  (same deviation as Task 10). Verified red phase:
+  `ModuleNotFoundError: No module named 'autored.tui.screens.hitl_gate'`.
+- Step 2: Wrote `autored/tui/screens/hitl_gate.py` following spec §17.4
+  closely:
+  - `HitLGateModal(ModalScreen[dict])` with CSS for `#gate-container`,
+    `#gate-title`, `#gate-command`, `#gate-buttons`, `.gate-btn`.
+  - BINDINGS: y (approve), n (reject), e (edit), s (skip), escape
+    (reject).
+  - `__init__(event)` stores the event dict.
+  - `compose()` yields title, details (Panel-wrapped Table),
+    RichLog (for the command), and four Buttons (Approve/Reject/Edit/
+    Skip).
+  - `on_mount()` writes the command to the RichLog as a `rich.syntax.
+    Syntax` renderable (theme="monokai", line_numbers=True), with
+    `_detect_language(cmd)` heuristic (bash/python/powershell).
+  - `_title_text()`, `_details_text()` — gate title + details table
+    (Target/Technique/CVE/Tool/Confidence/Expected outcome/Risks).
+  - `action_approve/reject/skip` — `self.dismiss({"response": ...,
+    "modified_command": None})`.
+  - `action_edit` — Phase 3 simplification: dismisses with
+    `{"response": "edit", "modified_command": None}` (Phase 6 will
+    wire up the full EditCommandScreen flow).
+  - `on_button_pressed(event)` — routes button clicks to the matching
+    action handler.
+- Step 3: Ran `uv run pytest tests/unit/tui/test_hitl_gate.py -v` →
+  **3 passed** on first attempt. Full suite: **171 passed, 2 skipped**
+  (168 from Task 10 baseline + 3 new). No regressions.
+- Step 4: Selective `git add` of `autored/tui/screens/hitl_gate.py`
+  and `tests/unit/tui/test_hitl_gate.py`. Committed as `f6b396f` with
+  message `feat: add HitLGateModal with y/n/e/s keybindings`.
+
+Stage Summary:
+- Artifacts produced:
+  - `autored/tui/screens/hitl_gate.py` — `HitLGateModal(ModalScreen[
+    dict])` with y/n/e/s keybindings, hypothesis details table,
+    syntax-highlighted command RichLog, and dismiss-with-response-dict
+    action handlers.
+  - `tests/unit/tui/test_hitl_gate.py` — 3 passing async tests
+    verifying y→approve, n→reject, s→skip.
+
+- Decisions / deviations from the plan/spec:
+  1. **Removed unused `textual.testing.Pilot` import** (same
+     deviation as Task 10 — module doesn't exist in textual 0.79.1).
+  2. **`action_edit` dismisses with the edit response instead of
+     pushing `EditCommandScreen`** (deviation). Spec §17.4 has
+     `action_edit` push `EditCommandScreen(self.event)` (a Phase 6
+     screen that does not exist yet) and `_after_edit` re-dismiss the
+     gate. For Phase 3, `action_edit` simply dismisses with
+     `{"response": "edit", "modified_command": None}`. The full edit
+     flow can be wired up in Phase 6 without changing this file's
+     public API. The Task 11 plan only tests y/n/s, so this is safe.
+  3. **Defensive `str(...)` coercion in `_details_text`** (minor).
+     Spec passes values straight to `table.add_row`. Wrapped each in
+     `str(...)` so None values (e.g. `cve=None` in test_hitl_gate_reject)
+     render as `"None"` rather than crashing in rich's Text rendering.
+
+- Test results: 3/3 passing in `tests/unit/tui/test_hitl_gate.py` in
+  1.7s. Full suite: 171 passed, 2 skipped.
+
+---
+Task ID: P3-12, P3-13, P3-14, P3-15
+Agent: implementer (Phase 3 final — graph + CLI + tests)
+Task: Phase 3 Tasks 12-15: build_phase3_graph, CLI switch, integration test, E2E test + README.
+
+Work Log:
+
+**Task 12 — `build_phase3_graph` in `autored/graph.py`**
+- Read existing `graph.py` (has `build_phase1_graph` and `build_phase2_graph`); read `exploit_node` in `autored/agents/exploit.py` to confirm the node signature (`async def exploit_node(state) -> dict`).
+- Added `from autored.agents.exploit import exploit_node` to graph.py imports.
+- Added `build_phase3_graph(checkpointer)` function with linear topology: `roe_gate_start → recon → vuln → exploit → report_phase1 → END`. No conditional edges (per task spec — `exploit_node` handles success/failure internally and always transitions to `report_phase1`). Phase 4 will add the post-ex branch.
+- Updated module docstring to document all three Phase topologies.
+- Verified: `uv run python -c "from autored.graph import build_phase3_graph; print('OK')"` → OK.
+- Committed as `feat: add build_phase3_graph with Exploit Agent node` (388f7e6).
+
+**Task 13 — CLI switch to Phase 3 graph**
+- In `autored/cli.py`, changed `from autored.graph import build_phase2_graph` to `build_phase3_graph`, plus added `from autored.tui.event_bus import EventBus`.
+- Replaced the Phase 1 "TUI not implemented" hard-error path with a soft warning: `--tui` now wires an EventBus onto the state and runs the engagement headless (auto-approve HitL). Full Textual UI launch deferred to a follow-up task.
+- Added `state.event_bus = EventBus()` after the state construction so the Exploit Agent's HitL gates have somewhere to emit (sandbox `auto_approve` mode means they won't block on operator input).
+- Changed `build_phase2_graph(checkpointer)` to `build_phase3_graph(checkpointer)` inside the `_run()` async closure.
+- Ran `uv run pytest tests/unit/test_cli.py -v` → 8 passed.
+- Committed as `feat: switch CLI to Phase 3 graph with TUI support` (cf7f0a5).
+
+**Task 14 — Phase 3 integration test (`tests/integration/test_phase3_pipeline.py`)**
+- Studied `tests/integration/test_phase2_pipeline.py` pattern (LLM call_count → recon plan / vuln hypotheses, mock `run_subprocess` per tool module, mock `httpx.AsyncClient` for NVD, mock `ChromaStore`, patch `run_subprocess` on every tool module that imports it).
+- Extended for Phase 3:
+  - LLM mock dispatches by router task name: `plan_recon` → `recon_plan_lame.json`, `synthesize_findings` → `vuln_hypotheses_shocker.json`, `second_opinion` → empty critique (converges in 1 iter), `plan_exploit` → `exploit_plan_blue.json`.
+  - Patches `autored.agents.recon.get_model`, `autored.agents.vuln.get_model`, `autored.subagents.hypothesiscritic.get_model`, `autored.agents.exploit.get_model` all with the same dispatching `mock_get_model` side_effect.
+  - Mocks all 4 exploit sub-agent tool wrappers defensively (`metasploit_rpc`, `sqlmap_run`, `hydra_brute`, `custom_command`) — only `msfagent` is actually exercised by the Blue plan.
+  - Mocks `_verify_foothold` to return True so the Exploit Agent records a foothold.
+  - Injects `state.event_bus = EventBus()` before invoking the graph.
+- **INTEGRATION BUG FOUND + FIXED**: The first run failed with `TypeError: Type is not msgpack serializable: EventBus` from `langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.aput_writes` → `JsonPlusSerializer.dumps_typed` → `ormsgpack.packb`. Root cause: `EventBus` was declared as a `@dataclass` with two `asyncio.Queue` fields. ormsgpack natively serializes dataclasses (including all fields) BEFORE falling back to the custom `_default` hook, so the `asyncio.Queue` fields hit ormsgpack's "not msgpack serializable" path. This would have broken the production CLI too — any Phase 3 engagement with `state.event_bus = EventBus()` would crash on the first checkpoint write.
+- **Fix**: Refactored `EventBus` in `autored/tui/event_bus.py` from `@dataclass` to a regular class with a `model_dump()` method returning `{}`. ormsgpack doesn't natively serialize regular classes, so it calls LangGraph's `_default` hook, which checks for `model_dump` (pydantic v2 protocol) and encodes the EventBus as a tiny constructor-call placeholder. The in-memory EventBus instance is preserved across nodes during a single `graph.ainvoke` call, so HitL gates work end-to-end. On resume, the reviver reconstructs an empty EventBus (fine — sandbox auto-approve doesn't need operator input).
+- Verified no test regressions: `uv run pytest tests/unit/tui/test_event_bus.py tests/integration/test_exploit_agent.py -v` → 8 passed (4 EventBus + 4 exploit_agent).
+- Ran `uv run pytest tests/integration/test_phase3_pipeline.py -v` → 1 passed. Assertions verified: phase in ("done", "postex"), ≥1 host, ≥1 service, ≥1 attack hypothesis, ≥1 foothold, raw outputs saved.
+- Committed both files together as `test: add Phase 3 integration test for full recon+vuln+exploit pipeline` (16c2a90) — commit message documents the EventBus refactor.
+
+**Task 15 — E2E test for HTB Blue (`tests/e2e/test_phase3_blue.py`) + README**
+- Used `pytestmark = pytest.mark.skipif(os.environ.get("AUTORED_E2E") != "1", reason=...)` at module level (matches Phase 1/2 E2E pattern).
+- Test runs full Phase 3 graph against 10.10.10.40 with real LLMs + real tools + real msfrpcd. Requires `AUTORED_LHOST` env var (HTB VPN tun0 IP) so Metasploit's reverse shell can connect back.
+- Assertions: port 445 open, ≥1 EternalBlue hypothesis (CVE-2017-0144 or ms17_010 in tool_module), ≥1 foothold recorded, foothold method == "ms17_010", phase in ("done", "postex").
+- Updated README.md with "Phase 3 E2E Test (Blue)" section: prerequisites (Metasploit + HTB VPN IP), `msfrpcd -P msf -p 55553 -a 127.0.0.1 -U msf -L` startup command, full run instructions, expected runtime (15-30 min), troubleshooting for common failure modes (RPC login failed, no session, no EternalBlue hypothesis).
+- Ran `uv run pytest tests/e2e/ -v` → 3 collected, 3 skipped (Phase 1 Lame, Phase 2 Shocker, Phase 3 Blue).
+- Committed as `test: add E2E test for Phase 3 against HTB Blue (skipped by default)` (f8e32b6).
+
+**Final verification**:
+- `uv run pytest tests/integration/test_phase3_pipeline.py -v` → 1 passed
+- `uv run pytest tests/e2e/ -v` → 3 skipped
+- `uv run pytest --tb=no -q` → **172 passed, 3 skipped** (was 171 passed before Phase 3 Tasks 12-15; net +1 from the new Phase 3 integration test)
+- `git log --oneline -5`:
+  - f8e32b6 test: add E2E test for Phase 3 against HTB Blue (skipped by default)
+  - 16c2a90 test: add Phase 3 integration test for full recon+vuln+exploit pipeline
+  - cf7f0a5 feat: switch CLI to Phase 3 graph with TUI support
+  - 388f7e6 feat: add build_phase3_graph with Exploit Agent node
+  - f6b396f feat: add HitLGateModal with y/n/e/s keybindings
+
+Stage Summary:
+- **All 4 tasks completed.** Phase 3 graph + CLI + integration test + E2E test + README all shipped.
+- **Artifacts produced**:
+  - `autored/graph.py` — added `build_phase3_graph` (kept Phase 1 + Phase 2 graph builders intact).
+  - `autored/cli.py` — switched to `build_phase3_graph`, wired `state.event_bus = EventBus()`, softened `--tui` flag.
+  - `autored/tui/event_bus.py` — refactored from `@dataclass` to regular class with `model_dump()` method (fix for AsyncSqliteSaver serialization).
+  - `tests/integration/test_phase3_pipeline.py` — new integration test (1 test, passing).
+  - `tests/e2e/test_phase3_blue.py` — new E2E test (1 test, skipped by default).
+  - `README.md` — added Phase 3 E2E section with msfrpcd setup + troubleshooting.
+- **Deviation**: EventBus refactored from `@dataclass` to regular class. This was a necessary bug fix uncovered by the integration test — the original `@dataclass` design crashed AsyncSqliteSaver's msgpack serializer on the first checkpoint write. The fix preserves the EventBus API (constructor, methods, attribute access patterns) so no existing tests broke. Documented in the EventBus class docstring and in the Task 14 commit message.
+- **Follow-up considerations**:
+  1. The CLI's `--tui` flag doesn't actually launch the Textual app yet — it just wires the EventBus and runs headless with auto-approve. A follow-up task should call `AutoRedTUI().run_async()` and use a Textual worker to drive `graph.ainvoke` while the TUI renders.
+  2. The `report_node_phase1` stub still overwrites `phase="postex"` with `phase="done"` after the Exploit Agent succeeds. Phase 4 should replace this stub with a real Report Agent that preserves the postex phase and triggers the Post-Ex Agent.
+  3. Resume (Phase 6) needs to re-inject a fresh EventBus after loading state from the checkpointer — the deserialized form is an empty placeholder EventBus (no queues populated), which is fine for sandbox auto-approve but would deadlock in interactive mode.
