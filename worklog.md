@@ -2384,3 +2384,277 @@ Stage Summary:
   1. The CLI's `--tui` flag doesn't actually launch the Textual app yet — it just wires the EventBus and runs headless with auto-approve. A follow-up task should call `AutoRedTUI().run_async()` and use a Textual worker to drive `graph.ainvoke` while the TUI renders.
   2. The `report_node_phase1` stub still overwrites `phase="postex"` with `phase="done"` after the Exploit Agent succeeds. Phase 4 should replace this stub with a real Report Agent that preserves the postex phase and triggers the Post-Ex Agent.
   3. Resume (Phase 6) needs to re-inject a fresh EventBus after loading state from the checkpointer — the deserialized form is an empty placeholder EventBus (no queues populated), which is fine for sandbox auto-approve but would deadlock in interactive mode.
+
+---
+Task ID: P4-1
+Agent: implementer (Phase 4 — Post-Ex models)
+Task: Phase 4 Task 1 — Extend Models (Post-Ex State + RoE Guard + impacket dep)
+
+Work Log:
+
+- Read `/home/z/my-project/worklog.md` (Phase 1-3 complete: 172 passed, 3
+  skipped) and the Phase 4 plan file (`docs/superpowers/plans/2026-09-21-autored-phase4-postex.md`),
+  locating Task 1 spec at lines 124-348.
+- Inspected existing files to understand the established patterns:
+  - `autored/models/foothold.py` (Pydantic BaseModel + Literal pattern).
+  - `autored/models/__init__.py` (explicit imports + `__all__`).
+  - `autored/state.py` (`EngagementState` with Field(default_factory=list)
+    for collection fields; `event_bus: Any = Field(default=None, exclude=True)`).
+  - `autored/roe_guard.py` (`_categorize_call` with `TOOL_CATEGORIES` dict;
+    Phase 4 stub already had `linpeas_run`/`winpeas_run`).
+  - `pyproject.toml` (line-length=100, target py312, ruff 0.7.1).
+
+**Step 1 — Add impacket dependency.** Ran `uv add impacket==0.12.0`.
+Resolved 19 new packages (impacket + transitive deps: pycryptodomex,
+cryptography, dnspython, flask, jinja2, ldap3, ldapdomaindump, pyasn1,
+pyasn1-modules, pyopenssl, setuptools, etc.). Added one line to
+`pyproject.toml` (`"impacket==0.12.0",`) and refreshed `uv.lock`.
+
+**Step 2 — Write failing test.** Created `tests/unit/models/test_postex.py`
+with the 10 tests verbatim from the plan: `test_user_model`,
+`test_secret_model`, `test_trust_model`, `test_privesc_candidate`,
+`test_privesc_candidate_rejects_invalid_category`, `test_privesc_attempt`,
+`test_persistence_artifact_records_removal` (Review Focus #3 —
+`removal_command` must be present and non-empty), 
+`test_persistence_artifact_rejects_invalid_method`, `test_evasion_action`,
+`test_exfil_evidence`.
+
+**Step 3 — Verify RED.** `uv run pytest tests/unit/models/test_postex.py -v`
+→ 1 collection error: `ModuleNotFoundError: No module named
+'autored.models.postex'`. Expected.
+
+**Step 4 — Write `autored/models/postex.py`.** Wrote all 8 Pydantic
+models exactly per the plan / spec §9.2:
+- `User`: `host_ip`, `username`, `uid: str | None = None`,
+  `groups: list[str] = Field(default_factory=list)`, `is_admin: bool = False`,
+  `is_service_account: bool = False`.
+- `Secret`: `id: str = Field(default_factory=lambda: str(uuid4()))`,
+  `host_ip`, `secret_type: Literal["password","hash","key","token","config","other"]`,
+  `secret_value`, `source`, `discovered_at: datetime =
+  Field(default_factory=datetime.utcnow)`.
+- `Trust`: `host_ip`, `trust_type: Literal["ad_domain","ssh_trust","nfs_export","smb_share","kerberos"]`,
+  `target`, `details: dict = Field(default_factory=dict)`.
+- `PrivescCandidate`: `host_ip`, `technique`, `category:
+  Literal["misconfig","app_system","kernel"]`, `details`, `confidence:
+  float = Field(ge=0.0, le=1.0)`, `exploit_command`, `removal_command:
+  str | None = None`.
+- `PrivescAttempt`: `candidate_id`, `host_ip`, `attempted_at: datetime =
+  Field(default_factory=datetime.utcnow)`, `success: bool`, `error: str |
+  None = None`, `new_context: str | None = None`.
+- `PersistenceArtifact`: `id` (auto-UUID), `host_ip`, `method: Literal`
+  of the 9 methods (`cron`, `systemd`, `bashrc`, `ssh_authorized_keys`,
+  `scheduled_task`, `registry_run`, `service`, `wmi_subscription`,
+  `dll_hijack`), `details: dict` (REQUIRED, not defaulted — matches the
+  test which always passes it), `removal_command: str` (REQUIRED — Review
+  Focus #3), `created_at`, `foothold_id`.
+- `EvasionAction`: `id` (auto-UUID), `host_ip`, `technique: Literal` of
+  5 (`amsi_bypass`, `etw_patch`, `log_clear`, `defender_disable`,
+  `process_injection`), `target`, `success: bool`, `command`, `timestamp`.
+- `ExfilEvidence`: `id` (auto-UUID), `method: Literal["https","dns","icmp","smb"]`,
+  `source_host`, `data_size_bytes: int`, `catch_server`,
+  `catch_server_log_path`, `timestamp`.
+
+**Step 5 — Update `autored/models/__init__.py`.** Added 8 imports and 8
+entries to `__all__`.
+
+**Step 6 — Update `autored/state.py`.** Imported the 8 new models and
+added 8 fields to `EngagementState` between `footholds` and
+`evidence_paths`, all with `Field(default_factory=list)` so existing
+Phase 1-3 tests don't need to know about Phase 4.
+
+**Step 7 — Update `autored/roe_guard.py`.** Replaced the existing 2-entry
+`# Phase 4+` block in `TOOL_CATEGORIES` with the full Phase 4 mapping
+(22 entries):
+  - read_only: `linpeas_run`, `winpeas_run`, `bloodhound_collect`,
+    `mimikatz_wrapper`, `secretsdump`, `certipy`.
+  - persistence: `cron_modify`, `systemd_create`, `bashrc_modify`,
+    `ssh_key_add`, `schtasks_create`, `reg_modify`, `service_create`.
+  - evasion: `amsi_bypass`, `etw_patch`, `log_clear`, `defender_disable`.
+  - exfil: `exfil_https`, `exfil_dns`, `exfil_icmp`, `exfil_smb`.
+Default fallback (`return TOOL_CATEGORIES.get(tool_name, "read_only")`)
+preserved.
+
+**Step 8 — Verify GREEN + no regressions.**
+- `uv run pytest tests/unit/models/test_postex.py -v` → **10 passed**.
+- `uv run pytest --tb=no -q` → **182 passed, 3 skipped** (was 172 passed
+  before Phase 4; +10 from the new postex model tests; matches plan
+  expectation of "182+ passed, 3 skipped").
+- `uv run ruff check` on all 5 modified/new files → **All checks passed!**.
+- Smoke test (manual `python -c`) verified: imports from both
+  `autored.models.postex` and the package-level `autored.models` work;
+  `EngagementState` constructed without Phase 4 args has empty lists
+  (not None) for all 8 new fields; JSON round-trip preserves them;
+  `_categorize_call` returns the right category for all 22 new tools;
+  auto-UUID `id` fields populate correctly.
+
+**Step 9 — Commit.** Selectively `git add`-ed only the 7 AutoRed files
+(`pyproject.toml`, `uv.lock`, `autored/models/postex.py`,
+`autored/models/__init__.py`, `autored/state.py`, `autored/roe_guard.py`,
+`tests/unit/models/test_postex.py`). Committed as
+`feat: add Post-Ex models and extend state for Phase 4` (2dfd203).
+
+Stage Summary:
+- **All 9 steps completed.** Phase 4 Task 1 ships 8 Pydantic models, 8
+  new `EngagementState` fields, 22 new RoE Guard tool categorizations,
+  and the impacket 0.12.0 dependency.
+- **Artifacts produced**:
+  - `autored/models/postex.py` — NEW (8 Pydantic models, full type
+    annotations, Review Focus #3 enforced via `removal_command: str`
+    REQUIRED field).
+  - `autored/models/__init__.py` — extended with 8 imports + 8 `__all__`
+    entries.
+  - `autored/state.py` — 8 new `Field(default_factory=list)` fields on
+    `EngagementState`; existing Phase 1-3 fields untouched.
+  - `autored/roe_guard.py` — `TOOL_CATEGORIES` extended from 17 → 39
+    entries (Phase 4 block went from 2 → 22 entries).
+  - `tests/unit/models/test_postex.py` — NEW (10 tests, includes Review
+    Focus #3 persistence artifact removal test).
+  - `pyproject.toml` / `uv.lock` — `impacket==0.12.0` added.
+- **Test results**:
+  - `uv run pytest tests/unit/models/test_postex.py -v` → 10 passed.
+  - `uv run pytest --tb=no -q` → 182 passed, 3 skipped (+10 vs. Phase 3 baseline).
+- **Deviations**: None. The model definitions, state field additions,
+  and RoE Guard categorizations match the plan verbatim. (One minor
+  implementation note: `PersistenceArtifact.details` is a plain `dict`
+  with no default — this matches the plan, and the test always supplies
+  it explicitly, so it's fine. Same for `removal_command: str` being a
+  required field — that's the Review Focus #3 enforcement.)
+- **Follow-up considerations**:
+  1. The `datetime.utcnow()` deprecation warnings are pre-existing
+     throughout the codebase (every Phase 1-3 model uses them). I
+     matched the established style rather than introducing
+     `datetime.now(UTC)` only in Phase 4. A separate cleanup pass can
+     migrate the whole codebase to timezone-aware datetimes.
+  2. The RoE Guard still only enforces `persistence_allowed`,
+     `evasion_allowed`, `exfiltration_allowed`, `kernel_exploits_allowed`
+     on the four high-level categories. The new `privesc_*` granular
+     categories (`privesc_misconfig`, `privesc_app`, `privesc_kernel`)
+     are declared in `ToolCategory` but no Phase 4 tool currently maps
+     to them — Phase 4 privesc tools will use `exploit` or
+     `read_only` categories per the plan. The `_check_roe_rules`
+     special-case for `privesc_kernel` is therefore dead code for now;
+     it will become live if a later task adds a kernel-exploit tool
+     that categorizes itself as `privesc_kernel` (Task 9 / Task 12).
+
+---
+Task ID: P4-2
+Agent: implementer
+Task: Neo4j Docker-Compose + Store (Phase 4, Task 2)
+
+Work Log:
+- Read worklog.md (Phase 4 Task 1 complete, 182 tests passing) and the
+  Phase 4 plan file at `docs/superpowers/plans/2026-09-21-autored-phase4-postex.md`
+  (Task 2 spec at lines 351–525).
+- **Step 1** — Wrote `docker-compose.neo4j.yml` per the plan: Neo4j
+  5.25-community image, ports 7474 (browser) + 7687 (bolt),
+  `NEO4J_AUTH=neo4j/autored_local_dev`, `NEO4J_PLUGINS=["apoc","graph-data-science"]`,
+  volumes `./db/neo4j/data:/data` and `./db/neo4j/logs:/logs`. Added an
+  explicit `container_name: neo4j` so the `docker exec` upload command
+  can target it deterministically.
+- **Step 2** — Wrote failing test `tests/unit/persistence/test_neo4j_store.py`.
+  Implemented 8 tests (the plan's 4 plus 4 additional edge cases for
+  better coverage):
+  1. `test_store_init` — verifies uri/user/password ctor fields.
+  2. `test_start_docker_compose` — asserts `start()` invokes
+     `docker compose -f docker-compose.neo4j.yml up -d`.
+  3. `test_is_running` — True case (stdout contains "neo4j").
+  4. `test_is_running_false_when_not_running` — False case (empty stdout).
+  5. `test_upload_bloodhound_data` — success case returns True; asserts
+     `docker exec neo4j neo4j-admin database import full --nodes ...` is
+     the invoked command.
+  6. `test_upload_bloodhound_data_failure` — returncode 1 returns False.
+  7. `test_stop_runs_docker_compose_down` — `stop()` invokes
+     `docker compose ... down`.
+  8. `test_query_shortest_path_returns_empty_stub` — Phase 5 stub returns `[]`.
+  All tests mock `autored.persistence.neo4j_store.asyncio.create_subprocess_exec`
+  with `AsyncMock` returning a fake process whose `communicate()` is an
+  `AsyncMock` returning the (stdout, stderr) byte tuple — no real Docker.
+- **Step 3** — Ran the test pre-implementation; failed with
+  `ModuleNotFoundError: No module named 'autored.persistence.neo4j_store'`
+  (expected red).
+- **Step 4** — Wrote `autored/persistence/neo4j_store.py`. Implemented the
+  `Neo4jStore` class exactly as the plan specifies (5 async methods:
+  `start`, `stop`, `is_running`, `upload_bloodhound_data`,
+  `query_shortest_path`), all using `asyncio.create_subprocess_exec`.
+  Refactored the subprocess I/O into a private `_run(*cmd)` helper that
+  returns `(returncode, stdout, stderr)` so the boilerplate (PIPE
+  stdout/stderr, decode, error log) lives in one place. Made the compose
+  file name and container name ctor-injectable (defaults
+  `COMPOSE_FILE` / `"neo4j"`) so tests / future Phase 5 wiring can
+  override them. `is_running()` defensively returns `False` if `docker
+  ps` itself returns non-zero. `stop()` logs a warning but does not
+  raise on non-zero (mirrors `docker compose down` idempotency).
+- **Step 5** — Ran `uv run pytest tests/unit/persistence/test_neo4j_store.py -v`
+  → 8 passed. Ran the full suite → 190 passed, 3 skipped (was 182 in
+  Phase 4 Task 1, +8 from this task, no regressions). Ruff lint clean.
+- **Step 6** — Selective `git add` of the 3 new files
+  (`docker-compose.neo4j.yml`, `autored/persistence/neo4j_store.py`,
+  `tests/unit/persistence/test_neo4j_store.py`) and committed as
+  `feat: add Neo4j store for BloodHound data with docker-compose` (3d47f90).
+  The `worklog.md` modification was intentionally left uncommitted at
+  that point so the worklog append happens after the code commit per
+  the task protocol.
+
+Stage Summary:
+- **All 6 steps completed.** Phase 4 Task 2 ships a docker-compose for
+  Neo4j 5.25-community (APOC + GDS plugins) and a fully-async
+  `Neo4jStore` class that manages the container via
+  `asyncio.create_subprocess_exec`.
+- **Artifacts produced**:
+  - `docker-compose.neo4j.yml` — NEW (Neo4j 5.25-community, ports
+    7474+7687, APOC + GDS plugins, data/logs volumes).
+  - `autored/persistence/neo4j_store.py` — NEW (`Neo4jStore` class with
+    `start`/`stop`/`is_running`/`upload_bloodhound_data`/
+    `query_shortest_path`, all async; private `_run(*cmd)` helper).
+  - `tests/unit/persistence/test_neo4j_store.py` — NEW (8 tests, all
+    mock `asyncio.create_subprocess_exec`).
+- **Test results**:
+  - `uv run pytest tests/unit/persistence/test_neo4j_store.py -v`
+    → 8 passed.
+  - `uv run pytest tests/ -q` → 190 passed, 3 skipped (+8 vs. Phase 4
+    Task 1 baseline of 182 passed).
+  - `uv run ruff check` on the two new Python files → all checks passed.
+- **Deviations from the plan** (minor, called out for transparency):
+  1. **Test mock target**: the plan's test snippet patches
+     `subprocess.run`, but the plan's implementation uses
+     `asyncio.create_subprocess_exec`. Patching the wrong function
+     would not actually intercept the call and the test would either
+     error (no real Docker) or pass spuriously. Per the task brief
+     ("Tests mock `subprocess.run` or `asyncio.create_subprocess_exec`
+     — no real Docker needed"), I patched the function the
+     implementation actually calls.
+  2. **Test count**: the plan says "4 tests"; I wrote 8 (the 4 from the
+     plan plus 4 extra edge cases: `is_running=False` when container
+     down, `upload_bloodhound_data` failure path, `stop()` command
+     shape, `query_shortest_path` stub). All 8 follow the plan's
+     mocking pattern and naming conventions; the extras are additive.
+  3. **Implementation refinement**: refactored subprocess I/O into a
+     private `_run(*cmd) -> (returncode, stdout, stderr)` helper rather
+     than duplicating the PIPE/communicate/decode pattern 4 times. The
+     public API is identical to the plan.
+  4. **`container_name`**: added `container_name: neo4j` to the compose
+     file and made the store's container name ctor-injectable so
+     `docker exec` upload has a deterministic target. Default matches
+     the plan's hard-coded `neo4j-neo4j-1` service-host semantics.
+  5. **`neo4j==5.25.0` Python driver**: the task brief says this is
+     "already in pyproject.toml from Phase 1" — it is NOT actually
+     listed in `pyproject.toml`'s dependencies (only `impacket==0.12.0`
+     was added in Phase 4 Task 1). Since `query_shortest_path` is a
+     stub returning `[]` for Phase 4, no `import neo4j` is needed yet,
+     so the tests pass without the package. Phase 5 (real Cypher
+     queries) will need to add `neo4j==5.25.0` to `pyproject.toml`.
+- **Follow-up considerations**:
+  1. `upload_bloodhound_data` uses `neo4j-admin database import full
+     --nodes <path> --overwrite-destination neo4j` inside the
+     container. BloodHound's actual JSON output is multi-collection
+     (users/groups/computers/sessions/etc.), and the proper import
+     path in BloodHound CE is via the Python importer or
+     `bloodhound-ce` REST API. This Phase 4 stub wires up the data
+     flow; Phase 5 will replace it with a real BloodHound CE importer.
+  2. `query_shortest_path` returns `[]` and only logs — Phase 5 will
+     wire it to the neo4j Python driver with a Cypher `shortestPath`
+     query.
+  3. The compose file uses `container_name: neo4j` (hard-coded), which
+     means only one Neo4j instance can run at a time on a host. This
+     is intentional for a local-dev single-engagement setup; multi-
+     engagement concurrent runs would need a project-prefixed name.
