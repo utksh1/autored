@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<nmaprun scanner="nmap" args="nmap -oX - -T4 -F --top-ports 100 10.10.10.5" start="1695300000">
+  <host>
+    <status state="up" reason="echo-reply"/>
+    <address addr="10.10.10.5" addrtype="ipv4"/>
+    <address addr="00:50:56:b9:5c:8c" addrtype="mac"/>
+    <hostnames><hostname name="lame.htb" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="21"><state state="open"/><service name="ftp" product="vsftpd" version="2.3.4"/></port>
+      <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="4.7p1"/></port>
+      <port protocol="tcp" portid="139"><state state="open"/><service name="netbios-ssn"/></port>
+      <port protocol="tcp" portid="445"><state state="open"/><service name="smb"/></port>
+      <port protocol="tcp" portid="3632"><state state="open"/><service name="distccd"/></port>
+    </ports>
+  </host>
+</nmaprun>

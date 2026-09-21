@@ -1,0 +1,7 @@
+{
+  "steps": [
+    {"subagent": "portscan", "args": {"target": "10.10.10.5", "scan_type": "service"}, "depends_on": []},
+    {"subagent": "webenum", "args": {"url": "http://10.10.10.5"}, "depends_on": [0]},
+    {"subagent": "dnsenum", "args": {"hostname": "lame.htb"}, "depends_on": []}
+  ]
+}

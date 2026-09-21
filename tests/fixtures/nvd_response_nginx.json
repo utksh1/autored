@@ -1,0 +1,26 @@
+{
+  "resultsPerPage": 1,
+  "startIndex": 0,
+  "totalResults": 1,
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2017-7529",
+        "descriptions": [
+          {"lang": "en", "value": "Nginx range filter integer overflow"}
+        ],
+        "cvssMetricV30": [
+          {
+            "cvssData": {
+              "baseScore": 7.5,
+              "baseSeverity": "HIGH"
+            }
+          }
+        ],
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2017-7529"}
+        ]
+      }
+    }
+  ]
+}

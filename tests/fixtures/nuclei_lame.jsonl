@@ -1,0 +1,2 @@
+{"template-id":"CVE-2011-2523","type":"cve","severity":"high","host":"http://10.10.10.5","matched-at":"http://10.10.10.5","template-url":"https://nuclei.projectdiscovery.io/","description":"vsftpd 2.3.4 backdoor","reference":["https://nvd.nist.gov/vuln/detail/CVE-2011-2523"]}
+{"template-id":"ftp-vsftpd-backdoor","type":"vulnerability","severity":"critical","host":"10.10.10.5:21","matched-at":"10.10.10.5:21","template-url":"https://nuclei.projectdiscovery.io/","description":"vsftpd backdoor command execution","reference":[]}

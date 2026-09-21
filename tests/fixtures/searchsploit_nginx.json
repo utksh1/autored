@@ -1,0 +1,22 @@
+{
+  "RESULTS_SEARCH": [
+    {
+      "EDB-ID": "41081",
+      "Author": "metacom",
+      "Date": "2016-12-29",
+      "Title": "Nginx 1.11.5 - Malformed HTTP Request Header Handling",
+      "Type": "dos",
+      "Platform": "linux",
+      "Path": "/usr/share/exploitdb/exploits/linux/dos/41081.py"
+    },
+    {
+      "EDB-ID": "40898",
+      "Author": "Dx7",
+      "Date": "2016-12-01",
+      "Title": "Nginx 1.10.1 - Denial of Service",
+      "Type": "dos",
+      "Platform": "linux",
+      "Path": "/usr/share/exploitdb/exploits/linux/dos/40898.c"
+    }
+  ]
+}

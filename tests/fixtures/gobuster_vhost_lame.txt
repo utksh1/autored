@@ -1,0 +1,2 @@
+Found: dev.lame.htb            Status: 200    [Size: 1234]
+Found: admin.lame.htb          Status: 401    [Size: 567]

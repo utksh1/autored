@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+
+# Runtime data (gitignored — engagement-specific)
+engagements/
+db/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Non-project workspace directories (harness, uploads, tooling)
+.superpowers/
+skills/
+upload/
+download/
+tool-results/
+
+# Internal worklog (dev-only, not part of shipped project)
+# worklog.md

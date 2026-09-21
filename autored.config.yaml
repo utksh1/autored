@@ -1,0 +1,22 @@
+log_dir: "logs"
+engagements_dir: "engagements"
+db_path: "db/engagements.sqlite"
+chroma_path: "db/chroma"
+
+default_sandbox_roe: "roe-sandbox.yaml"
+
+llm:
+  default_temperature: 0.2
+  default_max_tokens: 8192
+  default_timeout: 120
+
+tools:
+  nmap_timeout: 600
+  nuclei_timeout: 900
+  feroxbuster_timeout: 600
+  default_wordlist: "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+  subdomain_wordlist: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+
+subagents:
+  max_execution_time: 300
+  max_retries: 3

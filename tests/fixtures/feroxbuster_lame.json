@@ -1,0 +1,2 @@
+{"type":"dir","url":"http://10.10.10.5/","path":"http://10.10.10.5/icons/","status":403,"content_length":285,"wildcard":false,"method":"GET","line_count":11,"word_count":18,"header_count":7,"extension":"","words":["icons"]}
+{"type":"file","url":"http://10.10.10.5/","path":"http://10.10.10.5/index.html","status":200,"content_length":600,"wildcard":false,"method":"GET","line_count":22,"word_count":89,"header_count":7,"extension":"html","words":["index","html"]}

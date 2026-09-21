@@ -1,0 +1,2 @@
+{"host":"lame.htb","resolver":["8.8.8.8:53"],"a":["10.10.10.5"],"status_code":"NOERROR"}
+{"host":"www.lame.htb","resolver":["8.8.8.8:53"],"cname":["lame.htb"],"a":["10.10.10.5"],"status_code":"NOERROR"}

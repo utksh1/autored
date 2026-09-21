@@ -1,0 +1,10 @@
+{
+  "critique": [
+    {
+      "rank": 1,
+      "issues": [],
+      "verdict": "sound",
+      "verdict_reason": "CVE-2014-6271 is real, Apache 2.2.22 with cgi-bin is a classic Shellshock target, command preview is correct."
+    }
+  ]
+}
