@@ -12,6 +12,14 @@ from autored.models import (
     AttackHypothesis,
     Foothold,
     ErrorEvent,
+    User,
+    Secret,
+    Trust,
+    PrivescCandidate,
+    PrivescAttempt,
+    PersistenceArtifact,
+    EvasionAction,
+    ExfilEvidence,
 )
 
 
@@ -36,6 +44,16 @@ class EngagementState(BaseModel):
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     attack_hypotheses: list[AttackHypothesis] = Field(default_factory=list)
     footholds: list[Foothold] = Field(default_factory=list)
+
+    # Post-Ex (Phase 4+)
+    local_users: list[User] = Field(default_factory=list)
+    harvested_secrets: list[Secret] = Field(default_factory=list)
+    trust_relationships: list[Trust] = Field(default_factory=list)
+    privesc_candidates: list[PrivescCandidate] = Field(default_factory=list)
+    privesc_attempts: list[PrivescAttempt] = Field(default_factory=list)
+    persistence_artifacts: list[PersistenceArtifact] = Field(default_factory=list)
+    evasion_actions: list[EvasionAction] = Field(default_factory=list)
+    exfiltration_proof: list[ExfilEvidence] = Field(default_factory=list)
 
     evidence_paths: list[str] = Field(default_factory=list)
     iteration_count: int = 0

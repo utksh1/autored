@@ -7,6 +7,16 @@ from autored.models.vulnerability import Vulnerability
 from autored.models.hypothesis import AttackHypothesis
 from autored.models.foothold import Foothold
 from autored.models.error import ErrorEvent
+from autored.models.postex import (
+    User,
+    Secret,
+    Trust,
+    PrivescCandidate,
+    PrivescAttempt,
+    PersistenceArtifact,
+    EvasionAction,
+    ExfilEvidence,
+)
 
 __all__ = [
     "RulesOfEngagement",
@@ -18,4 +28,13 @@ __all__ = [
     "AttackHypothesis",
     "Foothold",
     "ErrorEvent",
+    # Post-Ex (Phase 4)
+    "User",
+    "Secret",
+    "Trust",
+    "PrivescCandidate",
+    "PrivescAttempt",
+    "PersistenceArtifact",
+    "EvasionAction",
+    "ExfilEvidence",
 ]

@@ -155,8 +155,30 @@ def _categorize_call(tool_name: str) -> ToolCategory:
         "medusa_brute": "brute_force",
         "metasploit_rpc": "exploit",
         "custom_command": "exploit",
-        # Phase 4+
+        # Phase 4 — enumeration / cred-harvest (read-only)
         "linpeas_run": "read_only",
         "winpeas_run": "read_only",
+        "bloodhound_collect": "read_only",
+        "mimikatz_wrapper": "read_only",
+        "secretsdump": "read_only",
+        "certipy": "read_only",
+        # Phase 4 — persistence
+        "cron_modify": "persistence",
+        "systemd_create": "persistence",
+        "bashrc_modify": "persistence",
+        "ssh_key_add": "persistence",
+        "schtasks_create": "persistence",
+        "reg_modify": "persistence",
+        "service_create": "persistence",
+        # Phase 4 — evasion
+        "amsi_bypass": "evasion",
+        "etw_patch": "evasion",
+        "log_clear": "evasion",
+        "defender_disable": "evasion",
+        # Phase 4 — exfiltration
+        "exfil_https": "exfil",
+        "exfil_dns": "exfil",
+        "exfil_icmp": "exfil",
+        "exfil_smb": "exfil",
     }
     return TOOL_CATEGORIES.get(tool_name, "read_only")
