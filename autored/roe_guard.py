@@ -149,9 +149,12 @@ def _categorize_call(tool_name: str) -> ToolCategory:
         # Phase 2
         "nvd_query": "cve_query",
         "searchsploit_query": "cve_query",
-        # Phase 3+
+        # Phase 3
         "sqlmap_run": "exploit",
         "hydra_brute": "brute_force",
+        "medusa_brute": "brute_force",
+        "metasploit_rpc": "exploit",
+        "custom_command": "exploit",
         # Phase 4+
         "linpeas_run": "read_only",
         "winpeas_run": "read_only",

@@ -10,6 +10,7 @@ from autored.models import (
     DiscoveredPath,
     Vulnerability,
     AttackHypothesis,
+    Foothold,
     ErrorEvent,
 )
 
@@ -34,6 +35,7 @@ class EngagementState(BaseModel):
 
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     attack_hypotheses: list[AttackHypothesis] = Field(default_factory=list)
+    footholds: list[Foothold] = Field(default_factory=list)
 
     evidence_paths: list[str] = Field(default_factory=list)
     iteration_count: int = 0

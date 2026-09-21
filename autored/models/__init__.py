@@ -5,6 +5,7 @@ from autored.models.webapp import WebApp
 from autored.models.discovery import DiscoveredPath
 from autored.models.vulnerability import Vulnerability
 from autored.models.hypothesis import AttackHypothesis
+from autored.models.foothold import Foothold
 from autored.models.error import ErrorEvent
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "DiscoveredPath",
     "Vulnerability",
     "AttackHypothesis",
+    "Foothold",
     "ErrorEvent",
 ]
