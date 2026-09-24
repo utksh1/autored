@@ -1,10 +1,7 @@
-from pydantic import BaseModel, Field
-from datetime import datetime
+from __future__ import annotations
 
+# Spec §16 lists both webapp.py and discovery.py. DiscoveredPath lives in webapp.py;
+# this file re-exports for discovery-style imports.
+from autored.models.webapp import DiscoveredPath
 
-class DiscoveredPath(BaseModel):
-    url: str
-    status_code: int
-    content_length: int
-    depth: int = 0
-    discovered_at: datetime = Field(default_factory=datetime.utcnow)
+__all__ = ["DiscoveredPath"]

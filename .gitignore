@@ -1,42 +1,54 @@
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
 *.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
 .venv/
 venv/
 env/
+.python-version
 
-# Environment
-.env
-.env.local
+# uv
+.uv-cache/
 
-# Runtime data (gitignored — engagement-specific)
+# AutoRed runtime artifacts (never commit)
 engagements/
 db/
 logs/
+*.sqlite
+*.db
 
-# IDE
+# Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Test
-.pytest_cache/
-.coverage
-htmlcov/
+# Superpowers SDD workspace (scratch — git-ignored, survives via git history only)
+.superpowers/sdd/
 
-# Non-project workspace directories (harness, uploads, tooling)
-.superpowers/
-skills/
-upload/
-download/
-tool-results/
+# Local environment
+.env
 
-# Internal worklog (dev-only, not part of shipped project)
-# worklog.md
+# Superpowers harness files
+AGENTS.md
+GEMINI.md
+LICENSE
+RELEASE-NOTES.md
+package.json

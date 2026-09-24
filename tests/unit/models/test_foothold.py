@@ -1,6 +1,12 @@
-import pytest
+"""Unit tests for the Foothold model (Phase 3 T1)."""
+from __future__ import annotations
+
 from datetime import datetime
+
+import pytest
+
 from autored.models.foothold import Foothold
+
 
 def test_foothold_minimal():
     f = Foothold(
@@ -19,6 +25,7 @@ def test_foothold_minimal():
     assert f.access_type == "shell"
     assert f.method == "ms17_010"
 
+
 def test_foothold_rejects_invalid_context():
     with pytest.raises(Exception):
         Foothold(
@@ -29,6 +36,7 @@ def test_foothold_rejects_invalid_context():
             hypothesis_rank=1,
         )
 
+
 def test_foothold_rejects_invalid_access_type():
     with pytest.raises(Exception):
         Foothold(
@@ -38,6 +46,7 @@ def test_foothold_rejects_invalid_access_type():
             evidence_path="x", established_at=datetime.utcnow(),
             hypothesis_rank=1,
         )
+
 
 def test_foothold_round_trip_json():
     f = Foothold(

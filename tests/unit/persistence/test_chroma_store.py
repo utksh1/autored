@@ -1,15 +1,18 @@
-# tests/unit/persistence/test_chroma_store.py
+"""Unit tests for the Chroma vector store (cross-engagement similarity)."""
 import pytest
 from autored.persistence.chroma_store import ChromaStore
+
 
 @pytest.fixture
 def store(tmp_path):
     return ChromaStore(path=str(tmp_path / "chroma"))
 
+
 def test_store_initializes(store):
     assert store.client is not None
     assert store.findings_collection is not None
     assert store.techniques_collection is not None
+
 
 def test_upsert_and_query_finding(store):
     store.upsert_finding_sync(
@@ -24,6 +27,7 @@ def test_upsert_and_query_finding(store):
     assert len(results) >= 1
     assert any(r["metadata"].get("cve") == "CVE-2014-6271" for r in results)
 
+
 def test_upsert_and_query_technique(store):
     store.upsert_technique_sync(
         technique_id="T1059.004",
@@ -36,9 +40,11 @@ def test_upsert_and_query_technique(store):
     )
     assert len(results) >= 1
 
+
 def test_query_empty_store_returns_empty(store):
     results = store.query_similar_findings_sync(text="anything", top_k=5)
     assert results == []
+
 
 def test_query_with_filter(store):
     store.upsert_finding_sync("f1", "nginx vulnerability", {"service": "nginx"})

@@ -1,0 +1,2 @@
+[*] SMBv3.0 dialect used
+[-] SMB SessionError: STATUS_LOGON_FAILURE (The attempted logon is invalid due to bad authentication credentials)

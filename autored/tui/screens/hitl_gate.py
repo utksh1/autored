@@ -1,163 +1,123 @@
-"""HitLGateModal — modal that appears when an agent requests HitL approval.
+"""HitLGateModal — Human-in-the-Loop gate for the Exploit Agent (spec §17.4).
 
-Spec reference: §17.4 (HitLGateModal — the critical widget).
+A modal screen pushed by AutoRedApp when the orchestrator emits a
+``hitl_gate`` event. Displays the proposed attack hypothesis (target /
+technique / CVE / confidence / expected outcome / risks / command) and
+asks the operator to choose one of:
 
-Phase 3 deviations from spec:
-- `action_edit` dismisses with `{"response": "edit", "modified_command": None}`
-  instead of pushing `EditCommandScreen` (which does not yet exist — that is
-  a Phase 6 addition). The full edit flow can be wired up in Phase 6 without
-  changing this file's public API.
+- ``y`` (approve) — run the exploit as proposed
+- ``n`` (reject) — try the next ranked hypothesis
+- ``e`` (edit)    — modify the command before running (placeholder — full
+  edit UI lands in Phase 6 polish)
+- ``s`` (skip)    — skip this hypothesis without rejecting the engagement
+- ``escape``      — cancel the modal (treated as skip)
+
+The modal dismisses with ``{"response": str, "modified_command": str | None}``.
 """
-
 from __future__ import annotations
 
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.table import Table
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, RichLog, Static
+from textual.widgets import Static
+
+
+def _format_event(event: dict[str, Any]) -> str:
+    """Render the HitL event as a human-readable Rich-markup string."""
+    target = event.get("target", "?")
+    technique = event.get("technique", "?")
+    cve = event.get("cve") or "—"
+    tool = event.get("tool", "?")
+    confidence = event.get("confidence", 0.0)
+    expected = event.get("expected_outcome", "?")
+    risks = event.get("risks", []) or []
+    command = event.get("command", "")
+
+    risks_str = ", ".join(risks) if risks else "—"
+    conf_pct = int(float(confidence) * 100)
+    confidence_color = (
+        "red" if conf_pct >= 80 else "yellow" if conf_pct >= 50 else "cyan"
+    )
+
+    return (
+        "[bold underline]Hypothesis[/bold underline]\n\n"
+        f"  [bold]Target:[/bold]           {target}\n"
+        f"  [bold]Technique:[/bold]        {technique}\n"
+        f"  [bold]CVE:[/bold]              {cve}\n"
+        f"  [bold]Tool:[/bold]             {tool}\n"
+        f"  [bold]Expected:[/bold]         {expected}\n"
+        f"  [bold]Confidence:[/bold]       "
+        f"[{confidence_color}]{conf_pct}%[/{confidence_color}]\n"
+        f"  [bold]Risks:[/bold]            {risks_str}\n\n"
+        "[bold underline]Proposed command[/bold underline]\n\n"
+        f"  [magenta]{command}[/magenta]\n\n"
+        "[dim]────────────────────────────────────────[/dim]\n"
+        "[bold]y[/bold]=approve   "
+        "[bold]n[/bold]=reject   "
+        "[bold]e[/bold]=edit   "
+        "[bold]s[/bold]=skip   "
+        "[bold]Esc[/bold]=cancel"
+    )
 
 
 class HitLGateModal(ModalScreen[dict]):
-    """Modal that appears when an agent requests HitL approval."""
+    """Modal screen gating the Exploit Agent on each hypothesis."""
 
-    CSS = """
+    DEFAULT_CSS = """
     HitLGateModal {
         align: center middle;
     }
-    #gate-container {
-        width: 90;
-        height: 30;
-        border: solid $warning;
+    HitLGateModal > Static {
+        width: 80;
+        max-height: 80%;
+        border: round $warning;
         background: $surface;
         padding: 1 2;
-    }
-    #gate-title {
-        text-align: center;
-        background: $warning;
-        color: $text;
-        padding: 0 1;
-    }
-    #gate-command {
-        height: 10;
-        border: solid $accent;
-        margin: 1 0;
-        padding: 0 1;
-    }
-    #gate-buttons {
-        height: 3;
-        align: center middle;
-    }
-    .gate-btn {
-        margin: 0 1;
-        width: 16;
-    }
-    #gate-btn-yes {
-        background: $success;
-    }
-    #gate-btn-no {
-        background: $error;
     }
     """
 
     BINDINGS = [
-        Binding("y", "approve", "Approve", show=True),
-        Binding("n", "reject", "Reject", show=True),
-        Binding("e", "edit", "Edit", show=True),
-        Binding("s", "skip", "Skip", show=True),
-        Binding("escape", "reject", "Reject", show=False),
+        Binding("y", "approve", "Approve"),
+        Binding("n", "reject", "Reject"),
+        Binding("e", "edit", "Edit"),
+        Binding("s", "skip", "Skip"),
+        Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, event: dict):
-        super().__init__()
-        self.event = event
+    def __init__(self, event: dict[str, Any], *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._event = event
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="gate-container"):
-            yield Static(self._title_text(), id="gate-title")
-            yield Static(self._details_text())
-            with Vertical(id="gate-command"):
-                yield RichLog()
-            with Horizontal(id="gate-buttons"):
-                yield Button(
-                    "Approve [y]", id="gate-btn-yes", classes="gate-btn", variant="success"
-                )
-                yield Button(
-                    "Reject [n]", id="gate-btn-no", classes="gate-btn", variant="error"
-                )
-                yield Button(
-                    "Edit [e]", id="gate-btn-edit", classes="gate-btn", variant="warning"
-                )
-                yield Button("Skip [s]", id="gate-btn-skip", classes="gate-btn")
+        yield Static(_format_event(self._event))
 
-    def on_mount(self) -> None:
-        # Display the proposed command with syntax highlighting.
-        cmd_log = self.query_one(RichLog)
-        cmd = self.event.get("command", "") or ""
-        language = self._detect_language(cmd)
-        cmd_log.write(Syntax(cmd, language, theme="monokai", line_numbers=True))
-
-    def _title_text(self) -> str:
-        gate_type = self.event.get("gate_type", "exploit")
-        return f"  ⚠  HITL GATE — {gate_type.upper()}  ⚠  "
-
-    def _details_text(self) -> str:
-        e = self.event
-        table = Table(show_header=False, box=None)
-        table.add_column("Field", style="bold cyan")
-        table.add_column("Value")
-        table.add_row("Target", str(e.get("target", "")))
-        table.add_row("Technique", str(e.get("technique", "")))
-        table.add_row("CVE", str(e.get("cve", "N/A")))
-        table.add_row("Tool", str(e.get("tool", "")))
-        table.add_row("Confidence", f"{e.get('confidence', 0):.0%}")
-        table.add_row("Expected outcome", str(e.get("expected_outcome", "")))
-        risks = e.get("risks", []) or []
-        table.add_row(
-            "Risks",
-            "\n".join(f"• {r}" for r in risks) if risks else "None listed",
-        )
-        return str(Panel(table, title="Proposal"))
-
-    def _detect_language(self, cmd: str) -> str:
-        if cmd.startswith("nmap") or cmd.startswith("naabu"):
-            return "bash"
-        if "sqlmap" in cmd:
-            return "bash"
-        if "python" in cmd or "import " in cmd:
-            return "python"
-        if "powershell" in cmd or "Invoke-" in cmd:
-            return "powershell"
-        return "bash"
-
-    # ---- Action handlers for keybindings -------------------------------------
+    # --- Action handlers — each dismisses with the response envelope ------
 
     def action_approve(self) -> None:
+        """``y`` — operator approves the proposed command as-is."""
         self.dismiss({"response": "approve", "modified_command": None})
 
     def action_reject(self) -> None:
+        """``n`` — operator rejects this hypothesis (try the next rank)."""
         self.dismiss({"response": "reject", "modified_command": None})
 
     def action_edit(self) -> None:
-        # Phase 6 will wire up the full EditCommandScreen flow. For Phase 3,
-        # dismiss with the edit response so the orchestrator can fall back
-        # to the original command (or surface an "edit not yet supported"
-        # message).
-        self.dismiss({"response": "edit", "modified_command": None})
+        """``e`` — operator wants to edit the command before running.
+
+        Placeholder: dismiss with ``modified_command=None`` for now; the
+        full edit-mode UI (input box + syntax highlighting + Enter to
+        confirm) lands in Phase 6 TUI polish.
+        """
+        self.dismiss(
+            {"response": "edit", "modified_command": self._event.get("command")}
+        )
 
     def action_skip(self) -> None:
+        """``s`` — skip this hypothesis without rejecting the engagement."""
         self.dismiss({"response": "skip", "modified_command": None})
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id
-        if btn_id == "gate-btn-yes":
-            self.action_approve()
-        elif btn_id == "gate-btn-no":
-            self.action_reject()
-        elif btn_id == "gate-btn-edit":
-            self.action_edit()
-        elif btn_id == "gate-btn-skip":
-            self.action_skip()
+    def action_cancel(self) -> None:
+        """``Esc`` — cancel the modal; treated as a skip."""
+        self.dismiss({"response": "skip", "modified_command": None})

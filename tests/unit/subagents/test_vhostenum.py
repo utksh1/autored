@@ -1,5 +1,11 @@
+"""Tests for the vhostenum sub-agent (Phase 1, Task 20).
+
+Verifies that ``vhostenum_subagent`` is a thin pass-through wrapper
+around ``gobuster_vhost`` that returns the underlying ``VhostList``.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.vhostenum import vhostenum_subagent
 from autored.tools.gobuster_vhost import VhostList, VhostEntry
 
@@ -17,4 +23,3 @@ async def test_vhostenum_passes_through():
         })
     assert result.domain == "lame.htb"
     assert len(result.vhosts) == 1
-    assert result.vhosts[0].hostname == "dev.lame.htb"

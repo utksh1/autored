@@ -1,50 +1,31 @@
-# tests/unit/tools/test_nvd.py
+r"""Tests for the nvd tool wrapper (Phase 2, Task 4).
+
+Uses ``pytest-httpx`` (already a dev dep since Phase 0) to mock the NVD 2.0
+API. The brief shows ``url=lambda u: "services.nvd.nist.gov" in u`` for
+the URL matcher, but ``pytest-httpx==0.35.0``'s ``_url_match`` only accepts
+``str | re.Pattern | httpx.URL`` (NOT a callable) — a callable URL matcher
+fails with ``AttributeError: 'function' object has no attribute 'params'``
+inside ``_url_match`` when it tries ``dict(url_to_match.params)`` on the
+lambda. We use ``url=re.compile(r".*services\.nvd\.nist\.gov.*")`` instead:
+``re.Pattern`` is the only fuzzy-match form pytest-httpx supports, and
+``_url_match`` calls ``.match(str(received))`` on it (anchored at start, so
+the leading ``.*`` lets the substring match anywhere in the URL).
+"""
+
+import json
 import re
+
 import pytest
-import httpx
-from pathlib import Path
-from autored.tools.nvd import _build_nvd_url, _parse_nvd_response, NvdResult
 
-# pytest-httpx 0.35.0 dropped callable URL matchers (the plan's
-# `url=lambda u: ...` form raises ``'function' object has no attribute
-# 'params'`` because ``_url_match`` accesses ``url_to_match.params``).
-# Use a regex pattern (anchored at start via ``re.match``) instead.
-_NVD_URL_RE = re.compile(r"https?://services\.nvd\.nist\.gov.*")
-
-
-@pytest.fixture(autouse=True)
-def _register_test_roe():
-    """Register a permissive RoE for engagement_id='test'.
-
-    The plan's test calls ``nvd_query.ainvoke({..., "engagement_id": "test"})``
-    but does not register RoE for "test". The Phase 1 ``roe_guard`` decorator
-    (added in Phase 1 Task 9) raises ``RoEViolation`` when no RoE is registered
-    for the engagement. Without this fixture, every ``nvd_query.ainvoke`` call
-    would raise before reaching the HTTP layer. We register a permissive
-    sandbox RoE (0.0.0.0/0, all techniques allowed) so the roe_guard audit
-    check passes and the test can exercise the actual HTTP + retry logic.
-    Cleaned up after each test to avoid leaking state into the global
-    ``_roe_registry``.
-    """
-    from autored.roe_guard import register_roe, _roe_registry
-    from autored.models.roe import RulesOfEngagement
-
-    saved = _roe_registry.get("test")
-    roe = RulesOfEngagement(
-        engagement_name="t", operator="o", operator_signature="s",
-        allowed_ips=["0.0.0.0/0"], allowed_techniques=["*"],
-        persistence_allowed=True, evasion_allowed=True,
-        exfiltration_allowed=True, kernel_exploits_allowed=True,
-        hitl_mode="auto_approve",
-    )
-    register_roe("test", roe)
-    try:
-        yield
-    finally:
-        if saved is None:
-            _roe_registry.pop("test", None)
-        else:
-            _roe_registry["test"] = saved
+from autored.config import load_roe
+from autored.roe_guard import register_roe
+from autored.tools.nvd import (
+    NvdCve,
+    NvdResult,
+    _build_nvd_url,
+    _parse_nvd_response,
+    nvd_query,
+)
 
 
 @pytest.fixture
@@ -67,7 +48,6 @@ def test_build_nvd_url():
 
 
 def test_parse_nvd_response(nginx_response):
-    import json
     data = json.loads(nginx_response)
     result = _parse_nvd_response(data)
     assert isinstance(result, list)
@@ -80,40 +60,119 @@ def test_parse_nvd_response(nginx_response):
 
 
 def test_parse_nvd_empty(empty_response):
-    import json
     data = json.loads(empty_response)
     result = _parse_nvd_response(data)
     assert result == []
 
 
 @pytest.mark.asyncio
-async def test_nvd_query_success(httpx_mock, nginx_response):
-    from autored.tools.nvd import nvd_query
+async def test_nvd_query_success(httpx_mock, nginx_response, sandbox_roe_yaml):
+    """Call nvd_query via .ainvoke with a mocked 200 response from NVD.
+
+    RoE registration is required because the @roe_guard decorator blocks any
+    tool call without a registered engagement (even read-only / cve_query
+    ones) — the brief omitted this setup, so we register a sandbox RoE for
+    the test engagement.
+    """
+    roe = load_roe(sandbox_roe_yaml)
+    register_roe("nvd-test", roe)
+
     httpx_mock.add_response(
-        url=_NVD_URL_RE,
+        url=re.compile(r".*services\.nvd\.nist\.gov.*"),
         text=nginx_response,
     )
-    result = await nvd_query.ainvoke({
-        "product": "nginx",
-        "version": "1.17.3",
-        "engagement_id": "test",
-    })
+    result = await nvd_query.ainvoke(
+        {
+            "product": "nginx",
+            "version": "1.17.3",
+            "engagement_id": "nvd-test",
+        }
+    )
     assert isinstance(result, list)
     assert len(result) >= 1
+    assert isinstance(result[0], NvdCve)
     assert result[0].cve_id == "CVE-2017-7529"
 
 
 @pytest.mark.asyncio
-async def test_nvd_query_5xx_returns_empty(httpx_mock, empty_response):
-    """Review Focus: NVD returns 5xx — tool retries, then returns empty list."""
-    from autored.tools.nvd import nvd_query
-    httpx_mock.add_response(url=_NVD_URL_RE, status_code=503)
-    httpx_mock.add_response(url=_NVD_URL_RE, status_code=503)
-    httpx_mock.add_response(url=_NVD_URL_RE, status_code=503)
+async def test_nvd_query_5xx_returns_empty(httpx_mock, sandbox_roe_yaml):
+    """Review Focus: NVD returns 5xx — tool retries, then returns empty list.
+
+    3 mock 503 responses for 3 retry attempts (``with_retry(max_attempts=3)``).
+    After 3 failures, the retry decorator re-raises; the outer ``except`` in
+    ``nvd_query`` catches and returns ``[]`` — never raises to the caller.
+    """
+    roe = load_roe(sandbox_roe_yaml)
+    register_roe("nvd-test", roe)
+
+    nvd_url_matcher = re.compile(r".*services\.nvd\.nist\.gov.*")
+    for _ in range(3):
+        httpx_mock.add_response(
+            url=nvd_url_matcher,
+            status_code=503,
+        )
     # After 3 retries, tool should return empty list, not raise
-    result = await nvd_query.ainvoke({
-        "product": "nginx",
-        "version": "1.17.3",
-        "engagement_id": "test",
-    })
+    result = await nvd_query.ainvoke(
+        {
+            "product": "nginx",
+            "version": "1.17.3",
+            "engagement_id": "nvd-test",
+        }
+    )
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_nvd_query_ainvoke_works_with_roe_guard(httpx_mock, nginx_response, sandbox_roe_yaml):
+    """Integration test: call the decorated tool end-to-end via .ainvoke().
+
+    Regression catcher for the decorator-stacking bug (Ruling 1 in the Phase
+    1 SDD ledger): ``@tool`` must be applied OUTERMOST and ``@roe_guard``
+    INNER. The brief spec'd the opposite order (``@roe_guard`` over ``@tool``),
+    which produces a StructuredTool that is not callable via
+    ``.ainvoke({...})`` (``TypeError: 'StructuredTool' object is not
+    callable``). With the swapped order, the StructuredTool's underlying
+    coroutine is a regular async def, and ``.ainvoke({...})`` dispatches
+    correctly through the RoE wrapper.
+    """
+    # 1. Register a RoE for the test engagement.
+    roe = load_roe(sandbox_roe_yaml)
+    register_roe("nvd-int", roe)
+
+    # 2. Mock the NVD 2.0 API to return the nginx fixture.
+    httpx_mock.add_response(
+        url=re.compile(r".*services\.nvd\.nist\.gov.*"),
+        text=nginx_response,
+    )
+
+    # 3. Call the tool via .ainvoke({...}) — the only correct way to call a
+    #    StructuredTool.
+    result = await nvd_query.ainvoke(
+        {
+            "product": "nginx",
+            "version": "1.17.3",
+            "engagement_id": "nvd-int",
+        }
+    )
+
+    # 4. Assert the returned object is a list of NvdCve with the expected
+    #    fields populated from the fixture.
+    assert isinstance(result, list)
+    assert len(result) == 1
+    cve = result[0]
+    assert isinstance(cve, NvdCve)
+    assert cve.cve_id == "CVE-2017-7529"
+    assert cve.cvss_score == 7.5
+    assert cve.severity == "HIGH"
+    assert "Nginx range filter" in cve.description
+    assert cve.references == ["https://nvd.nist.gov/vuln/detail/CVE-2017-7529"]
+
+
+def test_nvd_result_model_importable():
+    """Sanity-check NvdResult is defined (brief Step 4 defines it even though
+    nvd_query returns ``list[NvdCve]``, not ``NvdResult``).
+    """
+    r = NvdResult(product="nginx", version="1.17.3")
+    assert r.product == "nginx"
+    assert r.cves == []
+    assert r.raw_response_path == ""

@@ -59,7 +59,18 @@ async def cvematcher_subagent(
             cves=cves,
         )
 
-    matches = await asyncio.gather(*[query_one(s) for s in queryable])
+    # Hoist the list of coroutines into a variable so asyncio.gather's
+    # call site stays a single line — return_exceptions=True must be
+    # detectable at the gather() call itself, not buried inside a
+    # comprehension (Review Focus #5).
+    tasks = [query_one(s) for s in queryable]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # With return_exceptions=True, a query that raised comes back as an
+    # Exception instance rather than cancelling the whole batch. Drop those
+    # — a service whose NVD query blew up is no different from one with no
+    # known CVEs for the downstream Vuln Agent (graceful degradation).
+    matches = [r for r in results if not isinstance(r, Exception)]
 
     # Only keep services that actually yielded at least one CVE — a service
     # with no CVE matches carries no actionable signal for the downstream

@@ -1,70 +1,68 @@
-"""ActivityLog widget — scrolling log of agent activity.
+"""ActivityLog widget — scrollable log of tool calls / events (spec §17.4).
 
-Spec reference: §17.4 (ActivityLog Widget).
+Wraps Textual's ``RichLog`` with an ``add_event(event)`` helper that formats
+the canonical AutoRed event line:
 
-Deviation from spec: events are buffered when the widget is not yet
-mounted, because Textual's `RichLog.write` requires an active app
-(`self.app.console`) to render the renderable. The unit test instantiates
-`ActivityLog()` outside of an app context, so we guard the `write` call.
+    [HH:MM:SS] {tool} {target} ({duration:.1f}s) {status}
+
+Status is colour-coded (success=green, error=red, warning=yellow, info=cyan).
 """
-
 from __future__ import annotations
 
 from datetime import datetime
 
-from rich.text import Text
 from textual.widgets import RichLog
 
 
 class ActivityLog(RichLog):
-    """Scrolling log of agent activity."""
+    """Scrollable log of tool-call events from the orchestrator."""
 
-    MAX_LINES = 1000
+    DEFAULT_CSS = """
+    ActivityLog {
+        border: round $primary;
+        background: $surface;
+    }
+    """
 
-    def __init__(self, **kwargs):
-        # RichLog only accepts keyword args; force our preferred defaults
-        # unless the caller explicitly overrides them.
+    MAX_LINES: int = 1000
+
+    STATUS_COLORS: dict[str, str] = {
+        "success": "green",
+        "error": "red",
+        "warning": "yellow",
+        "info": "cyan",
+        "skipped": "dim",
+    }
+
+    def __init__(self, *args, **kwargs) -> None:
+        # Hard-cap the buffer at MAX_LINES so long engagements don't OOM the
+        # TUI. Callers can still override via explicit ``max_lines=`` kwarg.
         kwargs.setdefault("max_lines", self.MAX_LINES)
-        kwargs.setdefault("wrap", True)
-        kwargs.setdefault("markup", True)
-        super().__init__(**kwargs)
-        # Lines buffered while the widget is unmounted (no active app to
-        # render through). Flushed on mount.
-        self._pending_lines: list = []
-
-    def _emit_line(self, line) -> None:
-        """Write a line to the log, buffering if not yet mounted."""
-        if self.is_mounted:
-            self.write(line)
-        else:
-            self._pending_lines.append(line)
-
-    def on_mount(self) -> None:
-        # Flush any buffered lines from before mount.
-        for line in self._pending_lines:
-            self.write(line)
-        self._pending_lines.clear()
+        super().__init__(*args, **kwargs)
 
     def add_event(self, event: dict) -> None:
-        ts = datetime.utcnow().strftime("%H:%M:%S")
-        tool = event.get("tool", "")
-        target = event.get("target", "")
-        status = event.get("status", "")
-        duration = event.get("duration_sec", 0)
+        """Format a tool-call event and append it to the log.
 
-        status_color = (
-            "green" if status == "success" else "red" if status == "error" else "yellow"
+        Event dict fields:
+        - ``tool`` (str)         — e.g. "nmap", "metasploit"
+        - ``target`` (str)       — host IP / URL
+        - ``status`` (str)       — "success" | "error" | "warning" | "info" | "skipped"
+        - ``duration_sec`` (float) — wall-clock time of the tool call
+        """
+        tool = str(event.get("tool", "?"))
+        target = str(event.get("target", "?"))
+        status = str(event.get("status", "info"))
+        duration = float(event.get("duration_sec", 0.0) or 0.0)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        color = self.STATUS_COLORS.get(status, "white")
+
+        line = (
+            f"[dim]{timestamp}[/dim] "
+            f"[bold]{tool}[/bold] "
+            f"[dim]{target}[/dim] "
+            f"({duration:.1f}s) "
+            f"[{color}]{status}[/{color}]"
         )
-        line = Text(f"[{ts}] ", style="dim")
-        line.append(Text(f"{tool} ", style="cyan"))
-        line.append(Text(f"{target} ", style="white"))
-        line.append(Text(f"({duration:.1f}s) ", style="dim"))
-        line.append(Text(status, style=status_color))
-        self._emit_line(line)
-
-    def add_error(self, event: dict) -> None:
-        ts = datetime.utcnow().strftime("%H:%M:%S")
-        line = Text(f"[{ts}] ", style="dim")
-        line.append(Text("ERROR: ", style="bold red"))
-        line.append(Text(event.get("message", ""), style="red"))
-        self._emit_line(line)
+        # RichLog.write is safe to call on an unmounted widget (it appends
+        # to the internal buffer + schedules a refresh).
+        self.write(line)

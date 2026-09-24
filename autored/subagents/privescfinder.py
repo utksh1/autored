@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from autored.logging import get_logger
 from autored.models.postex import PrivescCandidate
-from autored.router import get_model
+from autored.router import _is_refusal, get_model
 
 log = get_logger("subagents.privescfinder")
 
@@ -127,6 +127,13 @@ async def privescfinder_subagent(
         enum_results_json=json.dumps(enum_results, indent=2, default=str),
     )
     response = await model.ainvoke(prompt)
+    # Refusal detection centralised in router (Review Focus #4). If the LLM
+    # declines rather than producing JSON, return an empty candidate list —
+    # the downstream Post-Ex Agent treats "no candidates" as "no privesc
+    # path identified", which is the graceful-degradation contract.
+    if _is_refusal(response):
+        log.warning("privescfinder_refused", engagement_id=engagement_id)
+        return PrivescFinderOutput(candidates=[])
     raw_candidates = _parse_candidates_response(response.content)
 
     candidates: list[PrivescCandidate] = []

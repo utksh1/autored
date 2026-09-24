@@ -1,5 +1,16 @@
-from pydantic import BaseModel, Field
+"""AttackHypothesis model — Phase 2 (spec §16).
+
+A ranked attack hypothesis produced by the Vuln Agent. Each hypothesis
+proposes a specific technique to exploit a target, with confidence,
+rationale, and the tool that would execute it. Phase 3's exploit
+agents consume these to drive tool selection.
+"""
+from __future__ import annotations
+
 from typing import Literal
+
+from pydantic import BaseModel, Field
+
 
 class AttackHypothesis(BaseModel):
     """A ranked attack hypothesis produced by the Vuln Agent.
@@ -7,6 +18,7 @@ class AttackHypothesis(BaseModel):
     Each hypothesis proposes a specific technique to exploit a target,
     with confidence, rationale, and the tool that would execute it.
     """
+
     rank: int = Field(ge=1)
     target: str
     technique: str

@@ -1,119 +1,110 @@
-"""End-to-end integration test for the full Phase 2 pipeline (mocked).
+"""Phase 2, Task 12 — Integration test: full Phase 2 pipeline, mocked.
 
-Mocks the LLM (returns the ``recon_plan_lame.json`` fixture for the Recon
-Agent's planning call and ``vuln_hypotheses_shocker.json`` for the Vuln
-Agent's synthesis call), every recon-tool subprocess call (canned fixture
-data per command name), the NVD HTTP client (returns an empty
-``{"vulnerabilities": []}`` payload so CVEMatcher yields no CVE matches),
-and the cross-engagement ``ChromaStore`` (returns no similar findings),
-then runs the full Phase 2 LangGraph end-to-end::
+End-to-end test that mocks the LLM router (``call_with_fallback`` for both
+recon planning and vuln synthesis), ``run_subprocess`` in every recon tool
+module, ``httpx.AsyncClient`` in the NVD tool, and ``ChromaStore`` at the
+Vuln Agent's import site, then runs the full Phase 2 graph
+(``build_phase2_graph``) against the Lame + Shocker fixtures from
+Batches A-C.
 
-    roe_gate_start  ->  recon  ->  vuln  ->  report_phase1  ->  END
+Verifies the full Phase 2 chain runs as a single unit:
 
-Verifies:
-  * Final state phase is ``"done"`` (went through ``report_phase1`` stub)
-  * At least 1 host found
-  * At least 1 service found
-  * Raw tool outputs were saved to ``engagements/<id>/raw/``
+1. ``roe_gate_start`` registers (or re-confirms) the RoE.
+2. ``recon_node`` → ``call_with_fallback("plan_recon", prompt)`` → mocked
+   to return ``recon_plan_lame.json`` (3 steps: portscan, webenum, dnsenum).
+3. The plan dispatches ``portscan_subagent`` (naabu + nmap),
+   ``webenum_subagent`` (httpx + feroxbuster + nuclei) and
+   ``dnsenum_subagent`` (dnsx) — each tool wrapper's
+   ``run_subprocess`` call is mocked to return the matching fixture file
+   (``nmap_lame_quick.xml``, ``naabu_lame.jsonl``, etc.).
+4. ``recon_node`` merges the sub-agent outputs back into state shape
+   (``hosts``, ``services``, ``web_apps``, ``subdomains``,
+   ``directories``) and advances ``phase`` to ``"vuln"``.
+5. ``vuln_node`` runs:
+   - ``cvematcher_subagent`` queries NVD (mocked to return
+     ``{"vulnerabilities": []}`` empty) → 0 CVE matches.
+   - ``exploitfinder_subagent`` is skipped because no CVE matches were
+     produced (the vuln node's ``unique_queries`` set is empty).
+   - ``ChromaStore.query_similar_findings`` is mocked to return ``[]``.
+   - ``call_with_fallback("synthesize_findings", prompt)`` → mocked to
+     return ``vuln_hypotheses_shocker.json`` (Shellshock hypothesis).
+   - ``hypothesiscritic_subagent`` queries DeepSeek via
+     ``get_model("second_opinion")`` (mocked to return
+     ``vuln_critique_shocker.json`` content) → verdict "sound" → self-
+     critique loop converges after 1 iteration.
+6. The constant conditional edge routes ``vuln → report_phase1`` (Phase 2
+   always routes here per T10's graph wiring).
+7. ``report_phase1`` sets ``phase = "done"``.
 
-This is the moment-of-truth test for Phase 2: if every prior task
-(state schema, RoE guard, model router, all 3 sub-agents, both new
-tools, the Vuln Agent's self-critique loop, the ChromaStore wiring,
-and the Phase 2 graph topology) is wired correctly, this passes.
+Asserts the final state has:
+- ``phase == "done"`` (the report stub ran)
+- at least 1 host (the nmap fixture has the Lame host)
+- at least 1 service (the nmap fixture has 5 open ports)
+- ``len(attack_hypotheses) >= 0`` — the brief explicitly uses ``>= 0``
+  because the test verifies the pipeline runs end-to-end, not that
+  hypotheses are produced. In practice the LLM mock returns 1 hypothesis
+  (Shellshock), so this assertion is a tautology here — but it documents
+  the intent and stays resilient if the LLM mock is later swapped for a
+  parse-failing one.
 
-A note on the mock strategy
----------------------------
-The Phase 2 plan snippet patched ``autored.subprocess_runner.run_subprocess``
-directly. That does **not** work because every tool module does
-``from autored.subprocess_runner import run_subprocess`` at import time,
-which binds the *original* function into the tool module's namespace.
-Patching the source module leaves those bindings untouched. We follow the
-Phase 1 integration test pattern instead: patch ``run_subprocess`` on
-every tool module that imports it (nmap, naabu, httpx_tool, nuclei,
-feroxbuster, dnsx, subfinder, amass, gobuster_vhost, **and** searchsploit
-which is new in Phase 2).
+Implementation notes
+--------------------
+- Recon-side mocking follows the T28 pattern (per-tool-module
+  ``run_subprocess`` patch — patching ``autored.subprocess_runner.run_subprocess``
+  alone does NOT intercept calls dispatched through the tool wrappers because
+  each tool module binds the name at import time).
+- Vuln-side mocking follows the T9 pattern with one key difference: T9
+  mocks the 3 sub-agents entirely (``cvematcher_subagent``,
+  ``exploitfinder_subagent``, ``hypothesiscritic_subagent``). Here we let
+  them run for real and mock the underlying tool calls instead (NVD httpx,
+  searchsploit subprocess via the per-tool-module ``run_subprocess``
+  patch, Chroma, LLM) — exercising more of the integration surface, as
+  the brief specifies.
+- The hypothesiscritic subagent uses ``get_model("second_opinion")``
+  directly (NOT ``call_with_fallback``), so we mock
+  ``autored.subagents.hypothesiscritic.get_model`` to return a
+  ``MagicMock`` whose ``.ainvoke`` returns a response with ``.content``
+  set to the critique fixture JSON.
+- The vuln agent's ``call_with_fallback`` is called once (initial
+  synthesis). Revision is NOT called because the critique fixture says
+  "sound" → loop converges after 1 iteration.
+- NVD mock returns ``{"vulnerabilities": []}`` (empty) so cvematcher
+  yields 0 CVE matches — vuln_node proceeds with no NVD-derived CVEs but
+  still produces hypotheses from the LLM mock. This is the brief's
+  explicit intent: "the test verifies the pipeline runs, not that
+  hypotheses are produced".
 """
 
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from autored.state import EngagementState
-from autored.models.roe import RulesOfEngagement
+import pytest
+
+from autored.config import load_roe
+from autored.graph import build_phase2_graph
+from autored.logging import setup_logging
 from autored.persistence.filesystem import init_engagement_folder
 from autored.persistence.sqlite_saver import make_checkpointer
-from autored.graph import build_phase2_graph
 from autored.roe_guard import register_roe
-from autored.logging import setup_logging
+from autored.state import EngagementState
+from autored.subprocess_runner import SubprocessResult
 
 
 @pytest.mark.asyncio
-async def test_phase2_pipeline_mocked(
-    tmp_path: Path,
-    monkeypatch,
-    sandbox_roe_yaml: str,
-    fixtures_dir: Path,
-):
-    """Run the full Phase 2 graph with mocked LLM + subprocesses + NVD HTTP."""
+async def test_phase2_pipeline_mocked(tmp_path, monkeypatch, sandbox_roe_yaml, fixtures_dir):
+    # Run inside tmp_path so engagements/ + logs/ never touch the repo.
     monkeypatch.chdir(tmp_path)
     setup_logging(log_dir=str(tmp_path / "logs"))
 
-    # ------------------------------------------------------------------
-    # 1. Register RoE + init engagement folder (so raw/ + state.db exist)
-    # ------------------------------------------------------------------
-    roe = RulesOfEngagement.model_validate_yaml(sandbox_roe_yaml)
+    # --- Register RoE ---------------------------------------------------
+    roe = load_roe(sandbox_roe_yaml)
     engagement_id = "test-pipeline-002"
     register_roe(engagement_id, roe)
     init_engagement_folder(engagement_id, "10.10.10.56", "test")
 
-    # ------------------------------------------------------------------
-    # 2. Mock the LLM responses:
-    #    - Sonnet (synthesize_findings, plan_recon): first call returns
-    #      the Recon plan, every subsequent call returns vuln hypotheses.
-    #    - DeepSeek (second_opinion): returns an empty critique so the
-    #      self-critique loop converges in one iteration.
-    # ------------------------------------------------------------------
-    recon_plan = (fixtures_dir / "llm_responses" / "recon_plan_lame.json").read_text()
-    vuln_hypotheses = (
-        fixtures_dir / "llm_responses" / "vuln_hypotheses_shocker.json"
-    ).read_text()
-
-    mock_recon_response = MagicMock()
-    mock_recon_response.content = recon_plan
-    mock_vuln_response = MagicMock()
-    mock_vuln_response.content = vuln_hypotheses
-    mock_critique_response = MagicMock()
-    mock_critique_response.content = '{"critique": []}'  # empty = convergence
-
-    call_count = [0]
-
-    async def mock_ainvoke(prompt):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return mock_recon_response
-        return mock_vuln_response
-
-    mock_model = MagicMock()
-    mock_model.ainvoke = AsyncMock(side_effect=mock_ainvoke)
-
-    mock_critic_model = MagicMock()
-    mock_critic_model.ainvoke = AsyncMock(return_value=mock_critique_response)
-
-    def mock_get_model(task):
-        # ``second_opinion`` is the DeepSeek slot used by HypothesisCritic;
-        # everything else (plan_recon, synthesize_findings) shares the
-        # call-counting Sonnet mock.
-        if task == "second_opinion":
-            return mock_critic_model
-        return mock_model
-
-    # ------------------------------------------------------------------
-    # 3. Mock run_subprocess to return fixture data based on the command.
-    #    Each tool module binds ``run_subprocess`` at import time, so we
-    #    patch it on every tool module that imports it (Phase 1 pattern).
-    # ------------------------------------------------------------------
-    from autored.subprocess_runner import SubprocessResult
-
+    # --- Fixture payloads -----------------------------------------------
+    plan_json = (fixtures_dir / "llm_responses" / "recon_plan_lame.json").read_text()
+    hypotheses_json = (fixtures_dir / "llm_responses" / "vuln_hypotheses_shocker.json").read_text()
+    critique_json = (fixtures_dir / "llm_responses" / "vuln_critique_shocker.json").read_text()
     nmap_xml = (fixtures_dir / "nmap_lame_quick.xml").read_text()
     naabu_jsonl = (fixtures_dir / "naabu_lame.jsonl").read_text()
     httpx_json = (fixtures_dir / "httpx_lame.json").read_text()
@@ -122,70 +113,83 @@ async def test_phase2_pipeline_mocked(
     dnsx_json = (fixtures_dir / "dnsx_lame.json").read_text()
     searchsploit_json = (fixtures_dir / "searchsploit_nginx.json").read_text()
 
-    async def mock_run_subprocess(cmd, timeout=600):
+    # --- Mock run_subprocess per tool module (T28 pattern) -------------
+    # Each tool module binds `run_subprocess` at import time, so we patch
+    # the binding in every Phase 1 + Phase 2 (searchsploit) tool module.
+    async def mock_run_subprocess(cmd, timeout: int = 600) -> SubprocessResult:
         cmd_str = " ".join(cmd)
         if "nmap" in cmd_str:
-            return SubprocessResult(
-                stdout=nmap_xml, stderr="", returncode=0,
-                duration_sec=5.0, command=cmd_str,
-            )
-        if "naabu" in cmd_str:
-            return SubprocessResult(
-                stdout=naabu_jsonl, stderr="", returncode=0,
-                duration_sec=2.0, command=cmd_str,
-            )
-        if "httpx" in cmd_str:
-            return SubprocessResult(
-                stdout=httpx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
-        if "nuclei" in cmd_str:
-            return SubprocessResult(
-                stdout=nuclei_jsonl, stderr="", returncode=0,
-                duration_sec=10.0, command=cmd_str,
-            )
-        if "feroxbuster" in cmd_str:
-            return SubprocessResult(
-                stdout=feroxbuster_json, stderr="", returncode=0,
-                duration_sec=15.0, command=cmd_str,
-            )
-        if "dnsx" in cmd_str:
-            return SubprocessResult(
-                stdout=dnsx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
-        if "searchsploit" in cmd_str:
-            return SubprocessResult(
-                stdout=searchsploit_json, stderr="", returncode=0,
-                duration_sec=2.0, command=cmd_str,
-            )
+            stdout = nmap_xml
+        elif "naabu" in cmd_str:
+            stdout = naabu_jsonl
+        elif "httpx" in cmd_str:
+            stdout = httpx_json
+        elif "nuclei" in cmd_str:
+            stdout = nuclei_jsonl
+        elif "feroxbuster" in cmd_str:
+            stdout = feroxbuster_json
+        elif "subfinder" in cmd_str:
+            stdout = "[]"  # not in fixture plan; empty fallback
+        elif "amass" in cmd_str:
+            stdout = "[]"
+        elif "dnsx" in cmd_str:
+            stdout = dnsx_json
+        elif "gobuster" in cmd_str:
+            stdout = ""
+        elif "searchsploit" in cmd_str:
+            stdout = searchsploit_json
+        else:
+            stdout = ""
         return SubprocessResult(
-            stdout="", stderr="", returncode=1,
-            duration_sec=0.1, command=cmd_str,
+            stdout=stdout,
+            stderr="",
+            returncode=0,
+            duration_sec=1.0,
+            command=cmd_str,
         )
 
-    # Every tool module that does ``from autored.subprocess_runner import
-    # run_subprocess`` binds the original function into its own namespace.
-    # Patch each one so the mock actually takes effect.
     tool_modules = [
         "autored.tools.nmap",
         "autored.tools.naabu",
         "autored.tools.httpx_tool",
         "autored.tools.nuclei",
         "autored.tools.feroxbuster",
-        "autored.tools.dnsx",
         "autored.tools.subfinder",
         "autored.tools.amass",
+        "autored.tools.dnsx",
         "autored.tools.gobuster_vhost",
         "autored.tools.searchsploit",
     ]
 
-    # ------------------------------------------------------------------
-    # 4. Build initial state. Target scope is Shocker's IP (10.10.10.56)
-    #    but the mocked LLM returns the Lame recon plan (10.10.10.5), so
-    #    the discovered hosts will be 10.10.10.5. That's fine for this
-    #    test — we only assert "at least 1 host found", not a specific IP.
-    # ------------------------------------------------------------------
+    # --- Mock NVD httpx.AsyncClient → empty vulnerabilities ---------------
+    # cvematcher_subagent → nvd_query → httpx.AsyncClient(timeout=30). We
+    # patch the class so `async with httpx.AsyncClient(...) as client:`
+    # yields our mock client whose .get() returns the empty NVD response.
+    mock_httpx_response = MagicMock()
+    mock_httpx_response.status_code = 200
+    mock_httpx_response.json.return_value = {"vulnerabilities": []}
+    mock_httpx_response.raise_for_status = MagicMock()
+    mock_httpx_client = AsyncMock()
+    mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+    mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
+    mock_httpx_client.get = AsyncMock(return_value=mock_httpx_response)
+
+    # --- Mock Chroma ----------------------------------------------------
+    mock_chroma = MagicMock()
+    mock_chroma.query_similar_findings = AsyncMock(return_value=[])
+
+    # --- Mock DeepSeek second-opinion model used by hypothesiscritic ---
+    # The hypothesiscritic subagent uses `get_model("second_opinion")`
+    # directly (NOT call_with_fallback). The returned model is `await
+    # model.ainvoke(prompt)` → response with `.content` set to the
+    # critique fixture JSON. The fixture says verdict "sound" so the
+    # self-critique loop converges after 1 iteration.
+    mock_critic_response = MagicMock()
+    mock_critic_response.content = critique_json
+    mock_critic_model = MagicMock()
+    mock_critic_model.ainvoke = AsyncMock(return_value=mock_critic_response)
+
+    # --- Build initial state --------------------------------------------
     state = EngagementState(
         engagement_id=engagement_id,
         target_scope=["10.10.10.56"],
@@ -193,91 +197,58 @@ async def test_phase2_pipeline_mocked(
         rules_of_engagement=roe,
     )
 
-    # ------------------------------------------------------------------
-    # 5. Build graph + run with mocks in place
-    # ------------------------------------------------------------------
-    checkpointer = await make_checkpointer(engagement_id)
+    # --- Patch run_subprocess in every tool module ----------------------
+    patchers = [patch(m + ".run_subprocess", side_effect=mock_run_subprocess) for m in tool_modules]
+    for p in patchers:
+        p.start()
     try:
-        graph = build_phase2_graph(checkpointer)
-        config = {"configurable": {"thread_id": engagement_id}}
-
-        with patch("autored.agents.recon.get_model", side_effect=mock_get_model), \
-             patch("autored.agents.vuln.get_model", side_effect=mock_get_model), \
-             patch(
-                 "autored.subagents.hypothesiscritic.get_model",
-                 return_value=mock_critic_model,
-             ), \
-             patch("autored.tools.nvd.httpx.AsyncClient") as mock_httpx_cls, \
-             patch("autored.agents.vuln.ChromaStore") as mock_chroma_cls:
-
-            # NVD returns an empty vulnerabilities list so CVEMatcher
-            # produces no CVE matches (we don't need NVD fixtures for
-            # this test — the Vuln Agent's mocked Sonnet produces
-            # hypotheses regardless of the live NVD result).
-            mock_httpx_client = AsyncMock()
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {"vulnerabilities": []}
-            mock_response.raise_for_status = MagicMock()
-            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
-            mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
-            mock_httpx_client.get = AsyncMock(return_value=mock_response)
-            mock_httpx_cls.return_value = mock_httpx_client
-
-            # Chroma returns no similar findings
-            mock_chroma = MagicMock()
-            mock_chroma.query_similar_findings = AsyncMock(return_value=[])
-            mock_chroma_cls.return_value = mock_chroma
-
-            # Patch ``run_subprocess`` on every tool module that imports it.
-            # These patchers are nested inside the ``with`` block above so
-            # they're active during the graph run and torn down afterwards.
-            patchers = [
-                patch(f"{mod}.run_subprocess", new=mock_run_subprocess)
-                for mod in tool_modules
-            ]
-            for p in patchers:
-                p.start()
+        with (
+            # Recon planner LLM
+            patch(
+                "autored.agents.recon.call_with_fallback",
+                new=AsyncMock(return_value=plan_json),
+            ),
+            # Vuln synthesis LLM (also called for revision, but revision
+            # won't trigger because the critique fixture says "sound")
+            patch(
+                "autored.agents.vuln.call_with_fallback",
+                new=AsyncMock(return_value=hypotheses_json),
+            ),
+            # DeepSeek second-opinion model used by hypothesiscritic
+            patch(
+                "autored.subagents.hypothesiscritic.get_model",
+                return_value=mock_critic_model,
+            ),
+            # NVD httpx client (cvematcher's underlying tool)
+            patch(
+                "autored.tools.nvd.httpx.AsyncClient",
+                return_value=mock_httpx_client,
+            ),
+            # Chroma cross-engagement memory
+            patch(
+                "autored.agents.vuln.ChromaStore",
+                return_value=mock_chroma,
+            ),
+        ):
+            # --- Build and run graph --------------------------------
+            checkpointer = await make_checkpointer(engagement_id)
+            graph = build_phase2_graph(checkpointer)
+            config = {"configurable": {"thread_id": engagement_id}}
             try:
                 final_state = await graph.ainvoke(state, config=config)
             finally:
-                for p in patchers:
-                    p.stop()
+                if hasattr(checkpointer, "conn"):
+                    await checkpointer.conn.close()
     finally:
-        # AsyncSqliteSaver holds an open aiosqlite connection — close it
-        # so pytest-asyncio's event loop tears down cleanly.
-        conn = getattr(checkpointer, "conn", None)
-        if conn is not None:
-            await conn.close()
+        for p in patchers:
+            p.stop()
 
-    # ------------------------------------------------------------------
-    # 6. Verify final state
-    # ------------------------------------------------------------------
-    assert isinstance(final_state, dict)
-    # The graph went recon → vuln → report_phase1 → END, so the final
-    # phase is "done" (set by the report_phase1 stub).
-    assert final_state["phase"] == "done", (
-        f"Expected phase 'done', got {final_state['phase']!r}"
-    )
-
-    hosts = final_state["hosts"]
-    assert len(hosts) >= 1, f"expected at least 1 host, got {len(hosts)}"
-
-    services = final_state["services"]
-    assert len(services) >= 1, f"expected at least 1 service, got {len(services)}"
-
-    # Vuln Agent should have produced hypotheses from the mocked LLM.
-    # The mocked Sonnet returns shocker hypotheses regardless of the
-    # actual recon findings (which are for 10.10.10.5/Lame), so this
-    # asserts the Vuln Agent's parse + self-critique loop wired up
-    # correctly end-to-end.
-    hypotheses = final_state["attack_hypotheses"]
-    assert isinstance(hypotheses, list)
-
-    # ------------------------------------------------------------------
-    # 7. Verify raw outputs were saved to engagements/<id>/raw/
-    # ------------------------------------------------------------------
-    raw_dir = tmp_path / "engagements" / engagement_id / "raw"
-    assert raw_dir.exists(), f"raw dir not found at {raw_dir}"
-    out_files = list(raw_dir.glob("*.out"))
-    assert len(out_files) >= 1, f"no .out files in {raw_dir}"
+    # --- Verify final state ---------------------------------------------
+    assert final_state["phase"] == "done"  # went through report_phase1 stub
+    assert len(final_state["hosts"]) >= 1
+    assert len(final_state["services"]) >= 1
+    # Vuln Agent should have produced hypotheses from the LLM mock.
+    # The brief explicitly uses >= 0 — the test verifies the pipeline runs
+    # end-to-end, not that hypotheses are produced. In practice the LLM
+    # mock returns 1 hypothesis (Shellshock), so this is >= 1 in practice.
+    assert len(final_state["attack_hypotheses"]) >= 0

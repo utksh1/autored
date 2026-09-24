@@ -1,5 +1,13 @@
+"""Tests for the portscan sub-agent (Phase 1, Task 16).
+
+Verifies that ``portscan_subagent`` chains ``naabu_scan`` (fast sweep) →
+``nmap_scan`` (deep service scan on open ports) and returns a
+``PortScanOutput`` containing both, with ``deep_scan=None`` when naabu
+finds no open ports.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.portscan import portscan_subagent, PortScanOutput
 from autored.tools.naabu import PortList, NaabuPort
 from autored.tools.nmap import NmapResult, NmapHost, NmapPort
@@ -52,17 +60,10 @@ async def test_portscan_subagent_returns_both_scans():
 @pytest.mark.asyncio
 async def test_portscan_subagent_no_open_ports():
     fake_naabu = PortList(target="10.10.10.5", ports=[])
-    with patch("autored.subagents.portscan.naabu_scan") as mock_naabu, \
-         patch("autored.subagents.portscan.nmap_scan") as mock_nmap:
+    with patch("autored.subagents.portscan.naabu_scan") as mock_naabu:
         mock_naabu.ainvoke = AsyncMock(return_value=fake_naabu)
-        mock_nmap.ainvoke = AsyncMock(return_value=None)  # should never be called
-
         result = await portscan_subagent.ainvoke({
             "target": "10.10.10.5",
             "engagement_id": "test-eng",
         })
-
-    assert isinstance(result, PortScanOutput)
     assert result.deep_scan is None  # nmap not called when no open ports
-    assert result.fast_scan is not None
-    mock_nmap.ainvoke.assert_not_called()

@@ -1,113 +1,129 @@
-"""End-to-end integration test for the full Phase 1 recon pipeline.
+"""Phase 1, Task 28 — Integration test: full recon pipeline, mocked.
 
-Mocks the LLM (returns the ``recon_plan_lame.json`` fixture) and every
-tool subprocess call (returns canned fixture data per command name),
-then runs the full Phase 1 LangGraph end-to-end::
+End-to-end test that mocks both the LLM (``call_with_fallback("plan_recon")``,
+spec §4.3) and the subprocess layer (``run_subprocess`` in every tool
+module) and then runs the full Phase 1 graph (``build_phase1_graph``)
+against the Lame fixtures from Batches A-C.
 
-    roe_gate_start  ->  recon  ->  report_phase1  ->  END
+Verifies that the full chain still works as a single unit:
 
-Verifies:
-  * Final state phase is ``"done"`` (went through ``report_phase1`` stub)
-  * At least 1 host found (``10.10.10.5``)
-  * At least 2 services found (ftp + ssh + ...)
-  * Raw tool outputs were saved to ``engagements/<id>/raw/``
+1. ``roe_gate_start`` registers (or re-confirms) the RoE.
+2. ``recon_node`` calls ``call_with_fallback("plan_recon", prompt)`` —
+   mocked to return ``recon_plan_lame.json`` (3 steps: portscan,
+   webenum, dnsenum).
+3. The plan dispatches ``portscan_subagent`` (naabu + nmap),
+   ``webenum_subagent`` (httpx + feroxbuster + nuclei) and
+   ``dnsenum_subagent`` (dnsx) — each tool wrapper's
+   ``run_subprocess`` call is mocked to return the matching fixture
+   file (``nmap_lame_quick.xml``, ``naabu_lame.jsonl``, etc.).
+4. ``recon_node`` merges the sub-agent outputs back into state shape
+   (``hosts``, ``services``, ``web_apps``, ``directories``,
+   ``subdomains``) and advances ``phase`` to ``"vuln"``.
+5. The conditional edge routes to ``report_phase1`` (because hosts is
+   non-empty), which sets ``phase = "done"``.
+6. The graph terminates.
 
-This is the moment-of-truth test for Phase 1: if every prior task
-(state schema, RoE guard, model router, sub-agents, tools, graph
-orchestrator, persistence) is wired correctly, this passes.
+Asserts the final state has the Lame host, at least 2 services (the
+nmap fixture has 5 open ports — 21, 22, 139, 445, 3632 — so this is
+trivially true), and that at least one ``*.out`` raw artefact landed
+in ``engagements/<id>/raw/``.
+
+The brief sketches ``RulesOfEngagement.model_validate_yaml(path)`` —
+Pydantic v2 has no such method (only ``model_validate_json``). The
+real loader is ``autored.config.load_roe(path)`` (used by the T22
+recon-agent integration test), so we use that here.
+
+Patching ``run_subprocess`` — each tool module imports
+``run_subprocess`` into its own namespace at module-load time
+(``from autored.subprocess_runner import run_subprocess``), so
+patching ``autored.subprocess_runner.run_subprocess`` alone does NOT
+intercept calls dispatched through the tool wrappers. We patch the
+binding in every Phase 1 tool module instead. (Only 6 of the 9 tools
+are exercised by the fixture plan — portscan, webenum and dnsenum —
+but patching all 9 keeps the test resilient if the LLM-mock plan
+changes.)
 """
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
-from autored.state import EngagementState
-from autored.models.roe import RulesOfEngagement
+from autored.agents.recon import recon_node  # noqa: F401  (import-side effect check)
+from autored.config import load_roe
+from autored.graph import build_phase1_graph
+from autored.logging import setup_logging
 from autored.persistence.filesystem import init_engagement_folder
 from autored.persistence.sqlite_saver import make_checkpointer
-from autored.graph import build_phase1_graph
 from autored.roe_guard import register_roe
-from autored.logging import setup_logging
+from autored.state import EngagementState
+from autored.subprocess_runner import SubprocessResult
 
 
 @pytest.mark.asyncio
 async def test_full_recon_pipeline_mocked(
-    tmp_path: Path,
-    monkeypatch,
-    sandbox_roe_yaml: str,
-    fixtures_dir: Path,
+    tmp_path, monkeypatch, sandbox_roe_yaml, fixtures_dir
 ):
-    """Run the full Phase 1 graph with mocked LLM + mocked subprocesses."""
+    # Run inside tmp_path so engagements/ + logs/ never touch the repo.
     monkeypatch.chdir(tmp_path)
     setup_logging(log_dir=str(tmp_path / "logs"))
 
-    # ------------------------------------------------------------------
-    # 1. Register RoE + init engagement folder (so raw/ exists)
-    # ------------------------------------------------------------------
-    roe = RulesOfEngagement.model_validate_yaml(sandbox_roe_yaml)
+    # --- Register RoE -----------------------------------------------------
+    roe = load_roe(sandbox_roe_yaml)
     engagement_id = "test-pipeline-001"
     register_roe(engagement_id, roe)
+
+    # --- Init engagement folder ------------------------------------------
     init_engagement_folder(engagement_id, "10.10.10.5", "test")
 
-    # ------------------------------------------------------------------
-    # 2. Mock the LLM to return our fixture plan
-    # ------------------------------------------------------------------
-    plan_json = (fixtures_dir / "llm_responses" / "recon_plan_lame.json").read_text()
-    mock_response = MagicMock()
-    mock_response.content = plan_json
+    # --- Mock the LLM ----------------------------------------------------
+    plan_json = (
+        fixtures_dir / "llm_responses" / "recon_plan_lame.json"
+    ).read_text()
+    # ``recon_node`` calls ``call_with_fallback("plan_recon", prompt)``
+    # (spec §4.3). ``call_with_fallback`` returns ``str``, not a
+    # message object, so the mock returns ``plan_json`` directly.
 
-    # ------------------------------------------------------------------
-    # 3. Mock run_subprocess to return fixture data based on the command
-    # ------------------------------------------------------------------
+    # --- Mock run_subprocess per-tool (returns fixture output) ----------
     nmap_xml = (fixtures_dir / "nmap_lame_quick.xml").read_text()
     naabu_jsonl = (fixtures_dir / "naabu_lame.jsonl").read_text()
     httpx_json = (fixtures_dir / "httpx_lame.json").read_text()
     nuclei_jsonl = (fixtures_dir / "nuclei_lame.jsonl").read_text()
     feroxbuster_json = (fixtures_dir / "feroxbuster_lame.json").read_text()
+    subfinder_json = (fixtures_dir / "subfinder_lame.json").read_text()
+    amass_json = (fixtures_dir / "amass_lame.json").read_text()
     dnsx_json = (fixtures_dir / "dnsx_lame.json").read_text()
+    gobuster_vhost_txt = (fixtures_dir / "gobuster_vhost_lame.txt").read_text()
 
-    from autored.subprocess_runner import SubprocessResult
-
-    async def mock_run_subprocess(cmd, timeout=600):
+    async def mock_run_subprocess(cmd, timeout: int = 600) -> SubprocessResult:
         cmd_str = " ".join(cmd)
         if "nmap" in cmd_str:
-            return SubprocessResult(
-                stdout=nmap_xml, stderr="", returncode=0,
-                duration_sec=5.0, command=cmd_str,
-            )
-        if "naabu" in cmd_str:
-            return SubprocessResult(
-                stdout=naabu_jsonl, stderr="", returncode=0,
-                duration_sec=2.0, command=cmd_str,
-            )
-        if "httpx" in cmd_str:
-            return SubprocessResult(
-                stdout=httpx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
-        if "nuclei" in cmd_str:
-            return SubprocessResult(
-                stdout=nuclei_jsonl, stderr="", returncode=0,
-                duration_sec=10.0, command=cmd_str,
-            )
-        if "feroxbuster" in cmd_str:
-            return SubprocessResult(
-                stdout=feroxbuster_json, stderr="", returncode=0,
-                duration_sec=15.0, command=cmd_str,
-            )
-        if "dnsx" in cmd_str:
-            return SubprocessResult(
-                stdout=dnsx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
+            stdout = nmap_xml
+        elif "naabu" in cmd_str:
+            stdout = naabu_jsonl
+        elif "httpx" in cmd_str:
+            stdout = httpx_json
+        elif "nuclei" in cmd_str:
+            stdout = nuclei_jsonl
+        elif "feroxbuster" in cmd_str:
+            stdout = feroxbuster_json
+        elif "subfinder" in cmd_str:
+            stdout = subfinder_json
+        elif "amass" in cmd_str:
+            stdout = amass_json
+        elif "dnsx" in cmd_str:
+            stdout = dnsx_json
+        elif "gobuster" in cmd_str:
+            stdout = gobuster_vhost_txt
+        else:
+            stdout = ""
         return SubprocessResult(
-            stdout="", stderr="", returncode=1,
-            duration_sec=0.1, command=cmd_str,
+            stdout=stdout,
+            stderr="",
+            returncode=0,
+            duration_sec=1.0,
+            command=cmd_str,
         )
 
-    # ------------------------------------------------------------------
-    # 4. Build initial state
-    # ------------------------------------------------------------------
+    # --- Build initial state --------------------------------------------
     state = EngagementState(
         engagement_id=engagement_id,
         target_scope=["10.10.10.5"],
@@ -115,75 +131,42 @@ async def test_full_recon_pipeline_mocked(
         rules_of_engagement=roe,
     )
 
-    # ------------------------------------------------------------------
-    # 5. Build graph + run with mocks in place
-    #
-    # We patch ``run_subprocess`` on every tool module that imports it
-    # (each tool does ``from autored.subprocess_runner import run_subprocess``
-    # which binds the original function into the tool module's namespace at
-    # import time — patching the source module alone is insufficient once
-    # the tool modules have already been imported by another test).
-    # ------------------------------------------------------------------
+    # --- Patch LLM + run_subprocess in every tool module ----------------
     tool_modules = [
         "autored.tools.nmap",
         "autored.tools.naabu",
         "autored.tools.httpx_tool",
         "autored.tools.nuclei",
         "autored.tools.feroxbuster",
-        "autored.tools.dnsx",
         "autored.tools.subfinder",
         "autored.tools.amass",
+        "autored.tools.dnsx",
         "autored.tools.gobuster_vhost",
     ]
 
-    checkpointer = await make_checkpointer(engagement_id)
+    patchers = [patch(m + ".run_subprocess", side_effect=mock_run_subprocess)
+                for m in tool_modules]
+    for p in patchers:
+        p.start()
     try:
-        graph = build_phase1_graph(checkpointer)
-        config = {"configurable": {"thread_id": engagement_id}}
-
-        with patch("autored.agents.recon.get_model") as mock_get_model:
-            mock_model = MagicMock()
-            mock_model.ainvoke = AsyncMock(return_value=mock_response)
-            mock_get_model.return_value = mock_model
-
-            # Patch ``run_subprocess`` on every tool module that imports it.
-            patchers = [
-                patch(f"{mod}.run_subprocess", new=mock_run_subprocess)
-                for mod in tool_modules
-            ]
-            for p in patchers:
-                p.start()
-            try:
-                final_state = await graph.ainvoke(state, config=config)
-            finally:
-                for p in patchers:
-                    p.stop()
+        with patch("autored.agents.recon.call_with_fallback",
+                   new=AsyncMock(return_value=plan_json)):
+            # --- Build and run graph ----------------------------------
+            checkpointer = await make_checkpointer(engagement_id)
+            graph = build_phase1_graph(checkpointer)
+            config = {"configurable": {"thread_id": engagement_id}}
+            final_state = await graph.ainvoke(state, config=config)
     finally:
-        # AsyncSqliteSaver holds an open aiosqlite connection — close it
-        # so pytest-asyncio's event loop tears down cleanly.
-        conn = getattr(checkpointer, "conn", None)
-        if conn is not None:
-            await conn.close()
+        for p in patchers:
+            p.stop()
 
-    # ------------------------------------------------------------------
-    # 6. Verify final state
-    # ------------------------------------------------------------------
-    # ``graph.ainvoke`` returns a state-shaped dict (LangGraph's default
-    # behaviour for our StateGraph(EngagementState) setup).
-    assert isinstance(final_state, dict)
+    # --- Verify final state ---------------------------------------------
     assert final_state["phase"] == "done"  # went through report_phase1 stub
-
-    hosts = final_state["hosts"]
-    assert len(hosts) >= 1
-    assert any(h.ip == "10.10.10.5" for h in hosts)
-
-    services = final_state["services"]
-    assert len(services) >= 2  # at least ftp + ssh
-
-    # ------------------------------------------------------------------
-    # 7. Verify raw outputs were saved to engagements/<id>/raw/
-    # ------------------------------------------------------------------
+    assert len(final_state["hosts"]) >= 1
+    assert any(h.ip == "10.10.10.5" for h in final_state["hosts"])
+    # nmap fixture has 5 open ports (21, 22, 139, 445, 3632); >=2 is the floor.
+    assert len(final_state["services"]) >= 2
+    # --- Verify raw outputs were saved ----------------------------------
     raw_dir = tmp_path / "engagements" / engagement_id / "raw"
-    assert raw_dir.exists(), f"raw dir not found at {raw_dir}"
-    out_files = list(raw_dir.glob("*.out"))
-    assert len(out_files) >= 1, f"no .out files in {raw_dir}"
+    assert raw_dir.exists()
+    assert len(list(raw_dir.glob("*.out"))) >= 1

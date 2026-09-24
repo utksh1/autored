@@ -1,36 +1,109 @@
-/* Global TUI styling */
-App {
+/* AutoRed TUI global CSS — Phase 3, Task 10 + Phase 6, Task 13. */
+
+Screen {
+    background: $background;
+    color: $text;
+}
+
+#dashboard-body {
+    height: 1fr;
+    border: round $primary;
     background: $surface;
-    color: $text;
 }
 
-/* Phase indicator gradient effect */
-PhaseIndicator {
-    color: $primary;
-    text-align: center;
-    padding: 0 1;
-}
-
-/* Activity log monospace */
 ActivityLog {
-    background: $panel;
-    border: solid $accent;
+    height: 1fr;
+    border: round $primary;
+    background: $surface;
+}
+
+/* EngagementListScreen (Phase 6 Task 13, spec §17.5). */
+
+EngagementListScreen {
+    layout: vertical;
     padding: 0 1;
 }
 
-/* HitL modal warning glow */
-HitLGateModal #gate-title {
-    text-style: bold;
-    text-align: center;
+EngagementListScreen DataTable {
+    height: 1fr;
+    margin: 1 0;
 }
 
-/* Findings table severity colors */
-DataTable > .datatable--header {
-    background: $primary;
-    color: $text;
+/* EvidenceViewerScreen (Phase 6 Task 14, spec §17.5). */
+
+EvidenceViewerScreen {
+    layout: vertical;
 }
 
-/* Progress bar pulsing during active phase */
-ProgressBar {
-    color: $success;
+EvidenceViewerScreen TabbedContent {
+    height: 1fr;
+}
+
+/* LogViewerScreen (Phase 6 Task 14, spec §17.5). */
+
+LogViewerScreen {
+    layout: vertical;
+}
+
+LogViewerScreen RichLog {
+    height: 1fr;
+    border: solid $accent;
+    margin: 0 1;
+}
+
+/* StateInspectorScreen (Phase 6 Task 15, spec §17.5). */
+
+StateInspectorScreen {
+    layout: vertical;
+    padding: 0 1;
+}
+
+StateInspectorScreen Tree {
+    height: 1fr;
+    margin: 1 0;
+}
+
+/* FindingsTableScreen (Phase 6 Task 15, spec §17.5). */
+
+FindingsTableScreen {
+    layout: vertical;
+    padding: 0 1;
+}
+
+FindingsTableScreen #filters {
+    height: 3;
+}
+
+FindingsTableScreen DataTable {
+    height: 1fr;
+}
+
+/* AttackGraphScreen (Phase 6 Task 16, spec §17.5). */
+
+AttackGraphScreen {
+    layout: vertical;
+    padding: 0 1;
+}
+
+AttackGraphScreen Tree {
+    height: 1fr;
+    margin: 1 0;
+}
+
+/* RoEEditorScreen (Phase 6 Task 17, spec §17.5). */
+
+RoEEditorScreen {
+    layout: vertical;
+    padding: 0 1;
+}
+
+RoEEditorScreen TextArea {
+    height: 1fr;
+    margin: 1 0;
+}
+
+RoEEditorScreen #validation-status {
+    height: auto;
+    max-height: 8;
+    margin: 0 0 1 0;
 }

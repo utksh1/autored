@@ -1,23 +1,31 @@
-import pytest
+"""Shared pytest fixtures for AutoRed tests."""
+from __future__ import annotations
+
 from pathlib import Path
+
+import pytest
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
 
 @pytest.fixture
 def fixtures_dir() -> Path:
-    return Path(__file__).parent / "fixtures"
+    """Return the path to tests/fixtures/."""
+    return FIXTURES_DIR
+
 
 @pytest.fixture
 def sandbox_roe_yaml() -> str:
-    return """engagement_name: "Sandbox Engagement"
-operator: "test"
-operator_signature: "sandbox-mode"
-allowed_ips:
-  - "0.0.0.0/0"
-allowed_techniques:
-  - "*"
-persistence_allowed: true
-evasion_allowed: true
-exfiltration_allowed: true
-data_destruction_allowed: false
-kernel_exploits_allowed: true
-hitl_mode: "auto_approve"
-"""
+    """Return the path to the sandbox RoE YAML."""
+    return str(Path(__file__).parent.parent / "roe-sandbox.yaml")
+
+
+@pytest.fixture
+def tmp_engagement_dir(tmp_path, monkeypatch) -> Path:
+    """Redirect ENGAGEMENTS_DIR to a tmp_path for isolation."""
+    engagements = tmp_path / "engagements"
+    engagements.mkdir()
+    monkeypatch.setattr(
+        "autored.persistence.filesystem.ENGAGEMENTS_DIR", engagements
+    )
+    return engagements

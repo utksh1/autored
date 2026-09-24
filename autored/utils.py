@@ -1,66 +1,37 @@
-"""Cross-cutting utility helpers.
-
-Currently only :func:`generate_engagement_id`, which produces the
-human-readable, filesystem-safe engagement identifier used everywhere
-else in AutoRed:
-
-    ``YYYY-MM-DD_NNN-<name>-<target>``
-
-The sequence number ``NNN`` (1-indexed, zero-padded to 3 digits) is
-derived by counting existing engagement folders created today.
-"""
+"""AutoRed utility helpers."""
+from __future__ import annotations
 
 import re
 from datetime import datetime
 from pathlib import Path
 
-# Keep alphanumerics, dashes, underscores, and dots. Anything else gets
-# collapsed to a single dash so the engagement ID stays filesystem-safe
-# (and shell-friendly, since it'll appear in paths, log lines, and CLI
-# invocations).
-_SAFE_CHARS = re.compile(r"[^a-zA-Z0-9._-]")
+from autored.logging import get_logger
 
-
-def _sanitize(value: str, max_len: int = 30) -> str:
-    """Strip disallowed characters and cap length."""
-    return _SAFE_CHARS.sub("-", value)[:max_len]
+log = get_logger("utils")
 
 
 def generate_engagement_id(target: str, name: str = "") -> str:
-    """Generate an engagement ID of the form ``YYYY-MM-DD_NNN-<name>-<target>``.
+    """Generate an engagement ID like '2026-09-23_001-<name>-<target>'.
 
-    Args:
-        target: Target IP / hostname / CIDR. Always included.
-        name: Optional human-readable engagement name (e.g. ``"lame-test"``).
-            Sanitised to alphanumerics + ``._-``; if empty, it's omitted
-            entirely and the ID becomes ``YYYY-MM-DD_NNN-<target>``.
-
-    Returns:
-        A filesystem-safe engagement ID string.
-
-    The sequence number is computed by counting existing
-    ``engagements/YYYY-MM-DD_*`` folders under the current working
-    directory. Call this *before* :func:`init_engagement_folder` to avoid
-    off-by-one races.
+    The numeric counter (001, 002, ...) increments per-day by scanning
+    existing engagements/ subdirectories starting with the date prefix.
     """
-    date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    safe_name = _sanitize(name) if name else ""
-    safe_target = _sanitize(target)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    engagements = Path("engagements")
+    counter = 1
+    if engagements.exists():
+        for d in sorted(engagements.iterdir()):
+            if d.is_dir() and d.name.startswith(f"{today}_"):
+                try:
+                    n = int(d.name[len(today) + 1 : len(today) + 4])
+                    if n >= counter:
+                        counter = n + 1
+                except ValueError:
+                    continue
 
-    # Determine the next sequence number for today.
-    engagements_dir = Path("engagements")
-    if engagements_dir.exists():
-        today_prefix = f"{date_str}_"
-        todays = [
-            d.name
-            for d in engagements_dir.iterdir()
-            if d.is_dir() and d.name.startswith(today_prefix)
-        ]
-        seq = len(todays) + 1
-    else:
-        seq = 1
-
-    parts = [f"{date_str}_{seq:03d}"]
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "-", name)[:30] if name else ""
+    safe_target = re.sub(r"[^a-zA-Z0-9._-]", "-", target)[:30]
+    parts = [f"{today}_{counter:03d}"]
     if safe_name:
         parts.append(safe_name)
     parts.append(safe_target)

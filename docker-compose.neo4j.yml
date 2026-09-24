@@ -1,7 +1,7 @@
 services:
   neo4j:
     image: neo4j:5.25-community
-    container_name: neo4j
+    container_name: neo4j-neo4j-1
     ports:
       - "7474:7474"  # browser UI
       - "7687:7687"  # bolt

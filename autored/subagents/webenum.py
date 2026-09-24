@@ -56,7 +56,22 @@ async def webenum_subagent(
         "engagement_id": engagement_id,
     })
 
-    ferox_output, nuclei_output = await asyncio.gather(ferox_task, nuclei_task)
+    ferox_output, nuclei_output = await asyncio.gather(
+        ferox_task, nuclei_task, return_exceptions=True,
+    )
+
+    # With return_exceptions=True, a failure in feroxbuster or nuclei comes
+    # back as an Exception instance rather than cancelling the other. Treat
+    # a failed tool as an empty result so we still surface whatever the
+    # other tool found.
+    def _empty_or(result, model_cls):
+        if isinstance(result, Exception):
+            log.warning("webenum_tool_failed", error=str(result))
+            return model_cls()
+        return result
+
+    ferox_output = _empty_or(ferox_output, DirResult)
+    nuclei_output = _empty_or(nuclei_output, NucleiResult)
 
     log.info(
         "webenum_done",

@@ -1,5 +1,13 @@
+"""Tests for the msfagent sub-agent (Phase 3, Task 8).
+
+Verifies that ``msfagent_subagent`` is a thin wrapper around
+``metasploit_rpc.ainvoke({"method": "execute_exploit", "params": {...}})``
+and faithfully forwards both success and failure (RPC unreachable)
+``MsfResult`` envelopes — the brief's Review Focus case.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.msfagent import msfagent_subagent
 from autored.tools.metasploit import MsfResult
 

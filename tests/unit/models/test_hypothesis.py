@@ -1,5 +1,10 @@
+"""Unit tests for the AttackHypothesis model (Phase 2 T1)."""
+from __future__ import annotations
+
 import pytest
+
 from autored.models.hypothesis import AttackHypothesis
+
 
 def test_attack_hypothesis_minimal():
     h = AttackHypothesis(
@@ -20,6 +25,7 @@ def test_attack_hypothesis_minimal():
     assert h.command_preview is None
     assert h.confidence == 0.85
 
+
 def test_attack_hypothesis_with_metasploit():
     h = AttackHypothesis(
         rank=1,
@@ -37,6 +43,7 @@ def test_attack_hypothesis_with_metasploit():
     assert h.tool == "metasploit"
     assert h.tool_module == "exploit/windows/smb/ms17_010_eternalblue"
 
+
 def test_attack_hypothesis_rejects_invalid_tool():
     with pytest.raises(Exception):
         AttackHypothesis(
@@ -45,6 +52,7 @@ def test_attack_hypothesis_rejects_invalid_tool():
             confidence=0.5, rationale="x", prerequisites=[], risks=[],
         )
 
+
 def test_attack_hypothesis_rejects_confidence_out_of_range():
     with pytest.raises(Exception):
         AttackHypothesis(
@@ -52,6 +60,7 @@ def test_attack_hypothesis_rejects_confidence_out_of_range():
             expected_outcome="x", tool="custom",
             confidence=1.5, rationale="x", prerequisites=[], risks=[],
         )
+
 
 def test_attack_hypothesis_round_trip_json():
     h = AttackHypothesis(

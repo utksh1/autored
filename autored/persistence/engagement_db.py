@@ -1,5 +1,8 @@
 import aiosqlite
+import binascii
 from pathlib import Path
+from cryptography.fernet import InvalidToken
+from autored.crypto import encrypt_value, decrypt_value
 from autored.logging import get_logger
 
 log = get_logger("persistence.engagement_db")
@@ -95,12 +98,18 @@ async def insert_finding(db_path: str, finding: dict) -> None:
         await db.commit()
 
 async def insert_credential(db_path: str, credential: dict) -> None:
+    """INSERT OR REPLACE into credentials. Encrypts credential_value + cracked_value at rest."""
+    encrypted = dict(credential)
+    if encrypted.get("credential_value"):
+        encrypted["credential_value"] = encrypt_value(encrypted["credential_value"])
+    if encrypted.get("cracked_value"):
+        encrypted["cracked_value"] = encrypt_value(encrypted["cracked_value"])
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """INSERT OR REPLACE INTO credentials
                (id, engagement_id, username, credential_type, credential_value, source, target_host, cracked, cracked_value, discovered_at)
                VALUES (:id, :engagement_id, :username, :credential_type, :credential_value, :source, :target_host, :cracked, :cracked_value, :discovered_at)""",
-            credential,
+            encrypted,
         )
         await db.commit()
 
@@ -120,6 +129,51 @@ async def get_findings_by_cve(db_path: str, cve: str) -> list[dict]:
         cursor = await db.execute("SELECT * FROM findings WHERE cve = ?", (cve,))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def get_credentials_by_engagement(db_path: str, engagement_id: str) -> list[dict]:
+    """SELECT credentials for an engagement, decrypting credential_value + cracked_value on read.
+
+    Legacy plaintext rows (pre-Phase-0 DBs) raise InvalidToken / binascii.Error
+    when Fernet-decrypt is attempted. We catch, log a warning, and return the
+    raw value with a [LEGACY-PLAINTEXT] prefix so the caller can see it's a
+    legacy row and the engagement DB does not crash.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM credentials WHERE engagement_id = ?", (engagement_id,)
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            row_dict = dict(row)
+            if row_dict.get("credential_value"):
+                try:
+                    row_dict["credential_value"] = decrypt_value(row_dict["credential_value"])
+                except (InvalidToken, binascii.Error, ValueError) as exc:
+                    log.warning(
+                        "credential_decrypt_failed_legacy",
+                        credential_id=row_dict.get("id"),
+                        error=str(exc),
+                    )
+                    row_dict["credential_value"] = (
+                        f"[LEGACY-PLAINTEXT] {row_dict['credential_value']}"
+                    )
+            if row_dict.get("cracked_value"):
+                try:
+                    row_dict["cracked_value"] = decrypt_value(row_dict["cracked_value"])
+                except (InvalidToken, binascii.Error, ValueError) as exc:
+                    log.warning(
+                        "cracked_value_decrypt_failed_legacy",
+                        credential_id=row_dict.get("id"),
+                        error=str(exc),
+                    )
+                    row_dict["cracked_value"] = (
+                        f"[LEGACY-PLAINTEXT] {row_dict['cracked_value']}"
+                    )
+            result.append(row_dict)
+        return result
 
 async def get_findings_by_engagement(db_path: str, engagement_id: str) -> list[dict]:
     async with aiosqlite.connect(db_path) as db:

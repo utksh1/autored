@@ -1,0 +1,18 @@
+══╣ Check if we are inside docker
+Nope
+
+╚══════════╣ SUID - Check easy privesc methods for file
+rwxr-xr-x 1 root root 40K Sep  1 2024 /usr/bin/find
+rwsr-xr-x 1 root root 59K Oct  2 2024 /usr/bin/passwd
+
+╚══════════╣ Cron jobs
+*/5 * * * * root /opt/backup.sh
+0 2 * * * root /usr/local/bin/cleanup.sh
+
+╚══════════╣ Sudo
+user ALL=(ALL) NOPASSWD: /usr/bin/vim
+
+╚══════════╣ Interesting writable files
+/etc/backup.cfg
+
+Known vulnerabilities relevant to this system: CVE-2021-4034 CVE-2022-0847

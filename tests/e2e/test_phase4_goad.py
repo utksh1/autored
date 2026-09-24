@@ -1,135 +1,161 @@
-"""E2E test: full Phase 4 (recon + vuln + exploit + post-ex) against GoAD lab.
+"""Phase 4, Task 15 — E2E test against GoAD (Game Of Active Directory).
 
-GoAD (Game of Active Directory — https://github.com/Orange-Cyberdefense/GOAD)
-is a deliberately-vulnerable Active Directory lab with 3 forests / 5
-domains / ~30 users and a documented chain of privesc + lateral-movement
-paths. This test runs the entire Phase 4 graph against a running GoAD
-instance and asserts the Post-Ex Agent's six sub-activities produce
-populated state fields on at least one foothold.
+This module is **skipped by default**. Set ``AUTORED_E2E=1`` to opt in.
 
-It is **skipped by default** — set ``AUTORED_E2E=1`` to opt in, and
-only do so when:
+When enabled, the test runs the real Phase 4 graph (real LLM via the
+model router, real subprocess calls to ``nmap`` / ``naabu`` / ``httpx``
+/ ``nuclei`` / ``feroxbuster`` / ``subfinder`` / ``amass`` / ``dnsx``
+/ ``gobuster`` / ``searchsploit``, real NVD HTTP, real Metasploit RPC
+via ``msfrpcd``, real BloodHound collection via ``bloodhound-python``,
+real ``impacket`` ``secretsdump`` and ``mimikatz`` via the foothold
+session manager) against a self-hosted GoAD lab.
 
-  * GoAD is running locally (default vagrant-libvirt / virtualbox setup)
-  * ``ANTHROPIC_API_KEY`` and ``DEEPSEEK_API_KEY`` are set
-  * All required CLI recon + exploit tools are installed and on
-    ``$PATH`` (nmap, naabu, httpx, nuclei, feroxbuster, searchsploit,
-    Metasploit RPC, impacket's secretsdump, mimikatz, bloodhound-python)
-  * ``msfrpcd`` is running on ``127.0.0.1:55553`` with password ``msf``
-    (same as the Phase 3 E2E test)
-  * ``AUTORED_LHOST`` env var is set to your host IP reachable from
-    the GoAD VMs (for reverse shells)
-  * ``AUTORED_GOAD_TARGET`` env var is set to the GoAD host you want
-    to pivot into first (default: the first foothold box — typically
-    ``192.168.56.22`` (SRV02) or whichever box has an exposed + exploitable
-    service like SMB / WebDAV)
+GoAD (Game Of Active Directory) is a multi-VM Active Directory lab
+designed for red-team training. The Phase 4 E2E test verifies the
+Post-Ex Agent chain — foothold → enumeration → cred harvest →
+privesc → persistence — completes against a real AD environment
+with multiple nested trusts, Kerberos, and Windows-only defensive
+mechanisms.
 
-Expected runtime: 30–60 minutes (recon + vuln + exploit + 6 sub-activities
-per foothold). Test passes if:
+The canonical GoAD foothold is a Windows host (e.g., a member server
+or workstation) reached via an initial exploit (e.g., EternalBlue,
+MS17-010 on an unpatched Windows 7 box, or a credential-based foothold
+via bruteagent). The Phase 4 test exercises the full post-ex chain on
+that foothold: WindowsEnum surfaces local users + privesc candidates,
+CredHarvester runs mimikatz to dump NTLM hashes + plaintext passwords,
+BloodHound maps the AD trust graph, and the persistence + evasion +
+exfiltration sub-agents install reversible persistence implants.
 
-  * The Exploit Agent records at least 1 foothold (initial access)
-  * The Post-Ex Agent runs WindowsEnum and records at least 1 local user
-  * The CredHarvester sub-agent records at least 1 harvested secret
-    (mimikatz output on a Windows foothold should yield NTLM hashes at
-    minimum, and cleartext passwords if any users are logged in)
-  * At least 1 persistence artifact is installed (sandbox RoE allows
-    persistence; remove manually after the run with the recorded
-    ``removal_command`` — see ``engagements/<id>/state.json``)
-  * The graph reaches the ``done`` phase (post-ex → report → END)
+Prerequisites
+-------------
+- **GoAD lab deployed and running** locally (typically VirtualBox +
+  Vagrant). See https://github.com/Orange-Cyberdefense/GOAD for
+  setup. The default GoAD subnet is ``192.168.56.0/24``; the DC is
+  typically ``192.168.56.10`` and the member servers ``.11/.12/.13``.
+- **HackTheBox VPN NOT required** (GoAD is self-hosted). The operator
+  must instead be on the GoAD host-only network
+  (``ping 192.168.56.10`` succeeds from the operator's host).
+- ``ANTHROPIC_API_KEY`` (Sonnet 4.5 powers ``plan_recon`` +
+  ``synthesize_findings`` + ``plan_exploit``) and ``DEEPSEEK_API_KEY``
+  (powers ``second_opinion`` critique) set in the environment.
+- All 10 CLI tools installed and on ``PATH``: ``nmap``, ``naabu``,
+  ``httpx``, ``nuclei``, ``feroxbuster``, ``subfinder``, ``amass``,
+  ``dnsx``, ``gobuster``, ``searchsploit``.
+- **Metasploit RPC daemon running** on ``127.0.0.1:55553`` with
+  password ``msf``::
 
-Usage::
+      msfrpcd -P msf -p 55553 -a 127.0.0.1
 
-    # 1. Bring up GoAD (see GOAD repo for vagrant / ansible setup)
-    cd GOAD && vagrant up
+  (The msfagent sub-agent dispatches the initial foothold exploit via
+  this daemon.)
+- **``impacket``** installed (``pip install impacket``) — powers the
+  ``secretsdump.py`` remote-hash-dump used by CredHarvester against
+  Windows targets with credentials.
+- **``bloodhound-python``** installed
+  (``pip install bloodhound-python``) — powers the BloodHound data
+  collector that maps the AD trust graph from harvested credentials.
+- **Neo4j running** for BloodHound ingestion (the Phase 4
+  ``bloodhound_collect`` tool ingests the JSON via Neo4j). See
+  ``docker-compose neo4j up -d`` from the AutoRed repo root.
+- **A reachable reverse-handler port** on the operator's GoAD network
+  IP (default LHOST in the LLM-generated plan — the meterpreter
+  ``reverse_tcp`` payload dials back to this address).
+- ``AUTORED_E2E=1`` env var.
 
-    # 2. Verify the GoAD target VM is reachable
-    ping 192.168.56.22  # or whichever VM you're targeting first
+Run
+---
+    AUTORED_E2E=1 uv run pytest tests/e2e/test_phase4_goad.py -v -s
 
-    # 3. Start msfrpcd (Metasploit RPC daemon)
-    msfrpcd -P msf -p 55553 -a 127.0.0.1 -U msf -L
+Expected runtime: 30-60 minutes against GoAD (recon ~5min, vuln ~5min,
+exploit ~5-10min for the initial foothold, then post-ex ~15-30min
+covering WindowsEnum + mimikatz + BloodHound + persistence + evasion +
+exfil on the foothold). The test passes if all of the following hold:
 
-    # 4. Set env vars
-    export ANTHROPIC_API_KEY=sk-ant-...
-    export DEEPSEEK_API_KEY=sk-...
-    export AUTORED_E2E=1
-    export AUTORED_LHOST=192.168.56.1   # your VirtualBox host-only IP
-    export AUTORED_GOAD_TARGET=192.168.56.22
+- Recon discovers at least one Windows host on the GoAD subnet.
+- The Vuln Agent produces at least 1 attack hypothesis.
+- The Exploit Agent records at least 1 verified ``Foothold`` with
+  ``access_type`` indicating a Windows session (``winrm`` / ``shell``
+  with ``method`` referencing a Windows exploit like MS17-010 or a
+  credential-based foothold).
+- The Post-Ex Agent records at least 1 ``local_users`` entry (WindowsEnum
+  surfaced local accounts).
+- The Post-Ex Agent records at least 1 ``harvested_secrets`` entry
+  (mimikatz dumped NTLM hashes or plaintext passwords).
+- The Post-Ex Agent records at least 1 ``persistence_artifacts`` entry
+  (persistence is permitted by the sandbox RoE + auto-approve
+  short-circuits the HitL gate — a scheduled_task or registry Run key
+  implant is established on the foothold).
+- The Phase 4 graph terminates with ``state.phase == "done"`` (the
+  report stub ran after the postex node).
 
-    # 5. Run Phase 4 E2E test (use -s to see live findings)
-    uv run pytest tests/e2e/test_phase4_goad.py -v -s
+Mirrors the Phase 3 Blue E2E test (T15) in structure; differs in
+target (GoAD vs HTB Blue) and in the post-ex chain assertions (Phase 3
+stops at the foothold; Phase 4 extends through post-ex).
 """
-
-import asyncio
 import os
-from pathlib import Path
 
 import pytest
 
-# Skip by default — only opt in with AUTORED_E2E=1 (and even then,
-# only run when GoAD is up + API keys set + msfrpcd running).
 pytestmark = pytest.mark.skipif(
     os.environ.get("AUTORED_E2E") != "1",
-    reason="Set AUTORED_E2E=1 to run E2E tests (requires GoAD lab + msfrpcd)",
+    reason=(
+        "E2E test requires AUTORED_E2E=1 + live GoAD lab + API keys "
+        "+ msfrpcd + impacket + bloodhound-python + Neo4j"
+    ),
 )
 
 
 @pytest.mark.asyncio
-async def test_phase4_goad_full_pipeline(tmp_path: Path, monkeypatch):
-    """E2E: run full Phase 4 (recon + vuln + exploit + post-ex) against GoAD.
+async def test_phase4_goad_postex_chain(tmp_path, monkeypatch):
+    """E2E: run full Phase 4 (recon + vuln + exploit + postex) against GoAD.
+
+    Targets ``192.168.56.10`` (canonical GoAD DC entry point — the
+    operator may override via ``AUTORED_GOAD_TARGET``). The test
+    exercises the full Phase 4 graph: recon discovers Windows hosts,
+    the Vuln Agent produces an exploit hypothesis, the Exploit Agent
+    establishes a Windows foothold, and the Post-Ex Agent runs the
+    six sub-activities per foothold (enumeration → BloodHound →
+    privesc → persistence → evasion → exfiltration).
 
     Requires:
-      * GoAD lab running (``vagrant up`` in the GOAD checkout)
-      * ``ANTHROPIC_API_KEY`` and ``DEEPSEEK_API_KEY`` set
-      * ``nmap``, ``naabu``, ``httpx``, ``nuclei``, ``feroxbuster``,
-        ``searchsploit``, Metasploit Framework, impacket's secretsdump,
-        mimikatz, bloodhound-python installed and on ``$PATH``
-      * ``msfrpcd`` running on ``127.0.0.1:55553`` with password ``msf``
-      * ``AUTORED_LHOST`` env var set to your VirtualBox host-only IP
-      * ``AUTORED_GOAD_TARGET`` env var set to the first target IP
-        (default: ``192.168.56.22`` — SRV02 in the standard GoAD layout)
-      * ``AUTORED_E2E=1`` env var
-
-    Expected outcome:
-      * Recon discovers at least 1 host (the GoAD target)
-      * Vuln Agent produces at least 1 attack hypothesis
-      * Exploit Agent records at least 1 foothold
-      * Post-Ex Agent populates ``local_users``, ``harvested_secrets``,
-        and ``persistence_artifacts`` on at least one foothold
-      * Graph reaches phase ``done``
+    - GoAD lab deployed and reachable (``ping 192.168.56.10``).
+    - ANTHROPIC_API_KEY and DEEPSEEK_API_KEY set.
+    - nmap, naabu, httpx, nuclei, feroxbuster, subfinder, amass, dnsx,
+      gobuster, searchsploit installed and on PATH.
+    - msfrpcd running on 127.0.0.1:55553 with password 'msf'.
+    - impacket + bloodhound-python installed.
+    - Neo4j running for BloodHound ingestion.
+    - A reachable reverse-handler port on the operator's GoAD IP.
+    - AUTORED_E2E=1 env var.
     """
-    # Import here so the module-level skipif can short-circuit collection
-    # without dragging in autored (and its deps) on every test run.
-    from autored.state import EngagementState
-    from autored.models.roe import RulesOfEngagement
+    # Imports kept inside the test so a missing dependency at module
+    # load doesn't poison collection when AUTORED_E2E is unset.
+    from autored.config import RulesOfEngagement
+    from autored.graph import build_phase4_graph
+    from autored.logging import setup_logging
     from autored.persistence.filesystem import (
         init_engagement_folder,
         save_state_to_disk,
     )
     from autored.persistence.sqlite_saver import make_checkpointer
-    from autored.graph import build_phase4_graph
     from autored.roe_guard import register_roe
-    from autored.logging import setup_logging
+    from autored.state import EngagementState
     from autored.utils import generate_engagement_id
-    from autored.tui.event_bus import EventBus
-
-    lhost = os.environ.get("AUTORED_LHOST")
-    if not lhost:
-        pytest.fail(
-            "AUTORED_LHOST env var must be set to your VirtualBox "
-            "host-only IP (find it with: ip addr show vboxnet0 | "
-            "grep 'inet ')."
-        )
-
-    goad_target = os.environ.get("AUTORED_GOAD_TARGET", "192.168.56.22")
 
     monkeypatch.chdir(tmp_path)
     setup_logging(log_dir=str(tmp_path / "logs"))
 
-    # Permissive sandbox RoE so real tool calls against the GoAD lab
-    # pass scope enforcement. persistence / evasion / exfil all allowed
-    # so we exercise every Post-Ex sub-activity; the persistence
-    # artifacts' ``removal_command`` fields are captured in state.json
-    # for manual teardown after the run.
+    # Canonical GoAD DC entry point — operator can override via env
+    # for non-default GoAD deployments.
+    target = os.environ.get("AUTORED_GOAD_TARGET", "192.168.56.10")
+
+    # Sandbox RoE (allows 0.0.0.0/0 + persistence + evasion + exfil +
+    # kernel) — never run E2E against production.
+    # auto_approve: the operator isn't sitting at the TUI to approve
+    # each privesc candidate / persistence / evasion / exfil gate; the
+    # gates short-circuit so the run completes unattended. (For an
+    # interactive E2E with HitL gates, set hitl_mode="always_ask" and
+    # run with --tui.)
     roe = RulesOfEngagement(
         engagement_name="E2E GoAD Phase 4 Test",
         operator="e2e-test",
@@ -143,123 +169,114 @@ async def test_phase4_goad_full_pipeline(tmp_path: Path, monkeypatch):
         hitl_mode="auto_approve",
     )
 
-    engagement_id = generate_engagement_id(goad_target, "e2e-goad-p4")
+    engagement_id = generate_engagement_id(target, "e2e-goad-phase4")
     register_roe(engagement_id, roe)
-    init_engagement_folder(engagement_id, goad_target, "e2e-test")
+    init_engagement_folder(engagement_id, target, "e2e-test")
 
     state = EngagementState(
         engagement_id=engagement_id,
-        target_scope=[goad_target],
+        target_scope=[target],
         operator="e2e-test",
         rules_of_engagement=roe,
     )
-    # EventBus wired so every HitL gate in the Exploit + Post-Ex
-    # Agents has somewhere to emit (auto-approve in sandbox mode means
-    # it won't block on operator input).
-    state.event_bus = EventBus()
 
     checkpointer = await make_checkpointer(engagement_id)
+    graph = build_phase4_graph(checkpointer)
+    config = {"configurable": {"thread_id": engagement_id}}
+
+    # Run with real LLM + real tools + real Metasploit RPC + real
+    # impacket + real bloodhound-python. Completes in 30-60 minutes
+    # against GoAD (recon ~5min, vuln ~5min, exploit ~5-10min, post-ex
+    # ~15-30min including WindowsEnum + mimikatz + BloodHound +
+    # persistence + evasion + exfil on the foothold).
     try:
-        graph = build_phase4_graph(checkpointer)
-        config = {"configurable": {"thread_id": engagement_id}}
-
-        # 60-minute cap so a hung tool doesn't stall CI forever.
-        # Phase 4 is longer than Phase 3 because the Post-Ex Agent
-        # runs 6 sub-activities per foothold — WindowsEnum (winpeas /
-        # mimikatz) + PrivescFinder + PersistenceAgent + EvasionAgent +
-        # ExfilAgent + bloodhound-python collection can each take
-        # several minutes against a live target.
-        final_state = await asyncio.wait_for(
-            graph.ainvoke(state, config=config),
-            timeout=3600,
-        )
+        final_state = await graph.ainvoke(state, config=config)
     finally:
-        conn = getattr(checkpointer, "conn", None)
-        if conn is not None:
-            await conn.close()
+        if hasattr(checkpointer, "conn"):
+            await checkpointer.conn.close()
 
-    # ------------------------------------------------------------------
-    # Normalise the final state into both dict and model forms
-    # ------------------------------------------------------------------
-    if isinstance(final_state, EngagementState):
-        final_state_dict = final_state.model_dump()
-        final_state_obj = final_state
-    else:
-        final_state_dict = final_state
-        final_state_obj = EngagementState.model_validate(final_state)
+    # --- Assertions ----------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # Assertions — Phase 3 carried-over expectations
-    # ------------------------------------------------------------------
-    # Phase should be 'done' (postex_node sets 'lateral', then
-    # report_phase1 stub overwrites with 'done').
-    assert final_state_dict["phase"] in ("done", "lateral"), (
-        f"Expected phase 'done' or 'lateral', got {final_state_dict['phase']!r}"
+    # Phase 4 ends at report_phase1 → phase='done' (the report stub
+    # overwrites postex's phase='lateral').
+    assert final_state["phase"] == "done", (
+        f"Unexpected phase: {final_state['phase']}"
     )
+    assert len(final_state["hosts"]) >= 1, "No hosts discovered"
 
-    hosts = final_state_dict["hosts"]
-    assert len(hosts) >= 1, "expected at least 1 host discovered"
-    assert any(h["ip"] == goad_target for h in hosts), (
-        f"expected {goad_target} in discovered hosts"
-    )
+    # At least one Windows host should be in the hosts list (GoAD is
+    # an all-Windows AD lab).
+    assert any(
+        h.ip == target for h in final_state["hosts"]
+    ), f"GoAD target ({target}) not in hosts"
 
-    # Exploit Agent should have recorded at least one foothold. Without
-    # a foothold the Post-Ex Agent has nothing to iterate over and every
-    # post-ex state field would be empty.
-    footholds = final_state_obj.footholds
-    assert len(footholds) >= 1, (
-        "Exploit Agent recorded no foothold — Phase 4 cannot proceed. "
-        "Check that the exploit plan's LHOST is reachable from the GoAD VM."
-    )
+    # Vuln Agent should have produced at least one hypothesis.
+    hypotheses = final_state["attack_hypotheses"]
+    assert len(hypotheses) >= 1, "Vuln Agent produced no attack hypotheses"
 
-    # ------------------------------------------------------------------
-    # Assertions — Phase 4 Post-Ex populated fields
-    # ------------------------------------------------------------------
-    local_users = final_state_obj.local_users
+    # Exploit Agent should have recorded at least 1 verified foothold.
+    footholds = final_state["footholds"]
+    assert len(footholds) >= 1, "Exploit Agent recorded no foothold"
+
+    # --- Phase 4 post-ex assertions ----------------------------------
+    # The full post-ex chain on the foothold should have produced:
+    # local_users (WindowsEnum surfaced local accounts).
+    local_users = final_state["local_users"]
     assert len(local_users) >= 1, (
-        "Post-Ex Agent recorded no local users — WindowsEnum sub-agent "
-        "did not enumerate the foothold. Check winpeas / secretsdump ran."
+        "Post-Ex Agent recorded no local_users (WindowsEnum should "
+        "have surfaced >=1 local account on a Windows foothold)"
     )
 
-    harvested_secrets = final_state_obj.harvested_secrets
+    # harvested_secrets (mimikatz dumped NTLM hashes / plaintext).
+    harvested_secrets = final_state["harvested_secrets"]
     assert len(harvested_secrets) >= 1, (
-        "Post-Ex Agent harvested no secrets — CredHarvester sub-agent "
-        "did not extract any credentials from the foothold. Check "
-        "mimikatz / secretsdump ran successfully."
+        "Post-Ex Agent recorded no harvested_secrets (mimikatz should "
+        "have dumped >=1 NTLM hash or plaintext password on the "
+        "Windows foothold)"
     )
 
-    # Persistence artifacts — sandbox RoE allows persistence; if
-    # anything went wrong with the persistence sub-agent the field
-    # would be empty. (Manual teardown required after the run —
-    # see ``engagements/<id>/state.json`` for each artifact's
-    # ``removal_command``.)
-    persistence_artifacts = final_state_obj.persistence_artifacts
+    # persistence_artifacts (persistence_allowed + auto_approve →
+    # a scheduled_task / registry Run key / etc. implant).
+    persistence_artifacts = final_state["persistence_artifacts"]
     assert len(persistence_artifacts) >= 1, (
-        "Post-Ex Agent installed no persistence artifacts — "
-        "PersistenceAgent sub-agent did not run or all candidates "
-        "were rejected at the HitL gate."
+        "Post-Ex Agent recorded no persistence_artifacts "
+        "(persistenceagent_subagent should have installed >=1 "
+        "reversible implant)"
+    )
+    # RF#3: every persistence artifact MUST carry a removal_command
+    # (Phase 5 Cleanup Agent walks the list and runs them verbatim).
+    for art in persistence_artifacts:
+        assert art.removal_command, (
+            f"PersistenceArtifact {art.id} ({art.method}) has empty "
+            "removal_command — Phase 5 Cleanup cannot reverse it"
+        )
+
+    # Save state for inspection
+    save_state_to_disk(
+        engagement_id, EngagementState.model_validate(final_state)
     )
 
-    # Save state for inspection after the run (state.json contains the
-    # removal_command for every persistence artifact — operator must
-    # run those commands manually to clean up the GoAD lab).
-    save_state_to_disk(engagement_id, final_state_obj)
-
-    # Print findings for manual review (visible with `pytest -s`).
+    # Print findings for manual review (-s to see stdout)
     print(f"\nE2E Test Complete: {engagement_id}")
-    print(f"Target: {goad_target}")
-    print(f"Hosts: {len(hosts)}")
+    print(f"Hosts: {len(final_state['hosts'])}")
+    print(f"Services: {len(final_state['services'])}")
+    print(f"Vulnerabilities: {len(final_state['vulnerabilities'])}")
+    print(f"Attack hypotheses: {len(hypotheses)}")
     print(f"Footholds: {len(footholds)}")
-    print(f"Local users enumerated: {len(local_users)}")
-    print(f"Secrets harvested: {len(harvested_secrets)}")
-    print(f"Trust relationships: {len(final_state_obj.trust_relationships)}")
-    print(f"Privesc candidates: {len(final_state_obj.privesc_candidates)}")
-    print(f"Privesc attempts: {len(final_state_obj.privesc_attempts)}")
+    print(f"Local users: {len(local_users)}")
+    print(f"Harvested secrets: {len(harvested_secrets)}")
+    print(f"Privesc candidates: {len(final_state['privesc_candidates'])}")
+    print(f"Privesc attempts: {len(final_state['privesc_attempts'])}")
     print(f"Persistence artifacts: {len(persistence_artifacts)}")
-    print(f"Evasion actions: {len(final_state_obj.evasion_actions)}")
-    print(f"Exfil proofs: {len(final_state_obj.exfiltration_proof)}")
-    print()
-    print("WARNING: persistence artifacts were installed on the GoAD lab.")
-    print("Run the removal_command from each artifact in")
-    print(f"  engagements/{engagement_id}/state.json")
-    print("to clean up before the next E2E run.")
+    print(f"Evasion actions: {len(final_state['evasion_actions'])}")
+    print(f"Exfil proofs: {len(final_state['exfiltration_proof'])}")
+    for f in footholds[:3]:
+        print(
+            f"  Foothold: {f.host_ip} via {f.method} "
+            f"(rank={f.hypothesis_rank}, access={f.access_type})"
+        )
+    for art in persistence_artifacts[:3]:
+        print(
+            f"  Persistence: {art.method} on {art.host_ip} "
+            f"(removal: {art.removal_command[:60]}...)"
+        )

@@ -1,0 +1,13 @@
+╚══════════╣ Autologon Registry
+DefaultDomainName : GOAD
+DefaultUserName   : administrator
+DefaultPassword   : Passw0rd!
+
+╚══════════╣ Modifiable Services
+C:\Windows\System32\spoolsv.exe (Print Spooler) - can be reconfigured
+
+╚══════════╣ Unattended Files
+C:\Windows\Panther\unattend.xml
+
+╚══════════╣ Scheduled tasks
+AutoRedUpdate (runs as SYSTEM daily)

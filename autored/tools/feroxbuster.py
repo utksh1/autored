@@ -1,5 +1,19 @@
+"""AutoRed feroxbuster tool wrapper — Phase 1, Task 11.
+
+Runs feroxbuster for directory/content discovery with JSON output and
+parses findings into a list of ``DirResult`` Pydantic models.
+
+Reuses ``_save_raw`` from ``autored.tools.nmap`` (Task 7) so every tool
+wrapper persists raw artefacts via the same path scheme.
+
+Decorator order note (Ruling 1 in the SDD ledger): ``@tool`` is applied
+OUTERMOST and ``@roe_guard`` INNER. The brief spec'd the opposite order
+(``@roe_guard`` over ``@tool``), but that produces a StructuredTool that
+is not callable via ``.ainvoke({...})`` at runtime — see Batch A review.
+"""
+from __future__ import annotations
+
 import json
-from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -7,7 +21,7 @@ from pydantic import BaseModel, Field
 from autored.logging import get_logger
 from autored.roe_guard import roe_guard
 from autored.subprocess_runner import run_subprocess
-from autored.tools.nmap import _save_raw
+from autored.tools.nmap import _save_raw  # reuse from nmap
 
 log = get_logger("tools.feroxbuster")
 
@@ -33,32 +47,50 @@ DEFAULT_WORDLIST = "/usr/share/seclists/Discovery/Web-Content/raft-medium-direct
 
 
 def _build_feroxbuster_cmd(url: str, wordlist: str, depth: int) -> list[str]:
+    """Build a feroxbuster argv list. Output goes to stdout as JSONL."""
     return [
         "feroxbuster",
-        "-u", url,
-        "-w", wordlist,
-        "-d", str(depth),
-        "--json", "-q",
+        "-u",
+        url,
+        "-w",
+        wordlist,
+        "-d",
+        str(depth),
+        "--json",
+        "-q",
     ]
 
 
 def _parse_feroxbuster_jsonl(text: str) -> list[DirResult]:
-    results = []
+    """Parse feroxbuster JSONL stdout into a list of DirResult.
+
+    The fixture file is ``feroxbuster_lame.json`` (``.json`` extension) but
+    the content is JSONL — one JSON object per line — matching what the
+    real feroxbuster binary emits with ``--json``.
+
+    Skips blank/malformed lines (logged at warning) so a single bad line
+    doesn't lose the whole sweep.
+    """
+    results: list[DirResult] = []
     for line in text.strip().splitlines():
         if not line:
             continue
         try:
             data = json.loads(line)
-            results.append(DirResult(
-                url=data.get("path", data.get("url", "")),
-                status_code=data.get("status", 0),
-                content_length=data.get("content_length", 0),
-                method=data.get("method", "GET"),
-                extension=data.get("extension") or None,
-                word=" ".join(data.get("words", [])),
-            ))
+            results.append(
+                DirResult(
+                    url=data.get("path", data.get("url", "")),
+                    status_code=data.get("status", 0),
+                    content_length=data.get("content_length", 0),
+                    method=data.get("method", "GET"),
+                    extension=data.get("extension") or None,
+                    word=" ".join(data.get("words", [])),
+                )
+            )
         except (json.JSONDecodeError, KeyError) as e:
-            log.warning("feroxbuster_parse_line_failed", line=line, error=str(e))
+            log.warning(
+                "feroxbuster_parse_line_failed", line=line, error=str(e)
+            )
     return results
 
 
@@ -85,10 +117,17 @@ async def feroxbuster_dir(
     log.info("feroxbuster_start", url=url, wordlist=wordlist, depth=depth)
 
     result = await run_subprocess(cmd, timeout=600)
-    raw_path = await _save_raw("feroxbuster", url, result.stdout, result.stderr, engagement_id)
+    raw_path = await _save_raw(
+        "feroxbuster", url, result.stdout, result.stderr, engagement_id
+    )
 
     results = _parse_feroxbuster_jsonl(result.stdout)
-    log.info("feroxbuster_done", url=url, paths_found=len(results), duration=result.duration_sec)
+    log.info(
+        "feroxbuster_done",
+        url=url,
+        paths_found=len(results),
+        duration=result.duration_sec,
+    )
 
     return FeroxbusterOutput(
         target_url=url,

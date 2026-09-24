@@ -1,30 +1,43 @@
-from autored.tools.nmap import nmap_scan, NmapResult, NmapHost, NmapPort
-from autored.tools.naabu import naabu_scan, NaabuPort, PortList
-from autored.tools.httpx_tool import httpx_probe, HttpxResult, HttpxOutput
-from autored.tools.nuclei import nuclei_scan, NucleiResult, NucleiOutput
-from autored.tools.feroxbuster import feroxbuster_dir, DirResult, FeroxbusterOutput
-from autored.tools.subfinder import subfinder_enum, SubdomainList
-from autored.tools.amass import amass_enum
-from autored.tools.dnsx import dns_resolve, DnsRecord, DnsResult, DnsOutput
-from autored.tools.gobuster_vhost import gobuster_vhost, VhostEntry, VhostList
+"""AutoRed tool wrappers (Phase 1+)."""
+from autored.tools.cleanup import (
+    CleanupExecutionResult,
+    CleanupVerificationResult,
+    cleanup_execute,
+    cleanup_verify,
+)
+from autored.tools.crackmapexec import CrackmapexecResult, crackmapexec
+from autored.tools.impacket_remote import (
+    ImpacketRemoteResult,
+    impacket_psexec,
+    impacket_smbexec,
+    impacket_wmiexec,
+)
+from autored.tools.nmap import NmapHost, NmapPort, NmapResult, nmap_scan
+from autored.tools.tunnel import (
+    TunnelResult,
+    chisel_reverse,
+    ligolo_connect,
+)
 
 __all__ = [
-    # nmap
-    "nmap_scan", "NmapResult", "NmapHost", "NmapPort",
-    # naabu
-    "naabu_scan", "NaabuPort", "PortList",
-    # httpx
-    "httpx_probe", "HttpxResult", "HttpxOutput",
-    # nuclei
-    "nuclei_scan", "NucleiResult", "NucleiOutput",
-    # feroxbuster
-    "feroxbuster_dir", "DirResult", "FeroxbusterOutput",
-    # subfinder (SubdomainList also reused by amass)
-    "subfinder_enum", "SubdomainList",
-    # amass (reuses SubdomainList)
-    "amass_enum",
-    # dnsx
-    "dns_resolve", "DnsRecord", "DnsResult", "DnsOutput",
-    # gobuster vhost
-    "gobuster_vhost", "VhostEntry", "VhostList",
+    "nmap_scan",
+    "NmapResult",
+    "NmapHost",
+    "NmapPort",
+    # Phase 5 — lateral movement
+    "impacket_wmiexec",
+    "impacket_psexec",
+    "impacket_smbexec",
+    "ImpacketRemoteResult",
+    "crackmapexec",
+    "CrackmapexecResult",
+    # Phase 5 — tunnels
+    "ligolo_connect",
+    "chisel_reverse",
+    "TunnelResult",
+    # Phase 5 — cleanup
+    "cleanup_execute",
+    "cleanup_verify",
+    "CleanupExecutionResult",
+    "CleanupVerificationResult",
 ]

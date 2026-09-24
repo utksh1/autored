@@ -1,8 +1,8 @@
+# Global AutoRed config — referenced by autored.config.load_global_config().
 log_dir: "logs"
 engagements_dir: "engagements"
 db_path: "db/engagements.sqlite"
 chroma_path: "db/chroma"
-
 default_sandbox_roe: "roe-sandbox.yaml"
 
 llm:
@@ -14,6 +14,10 @@ tools:
   nmap_timeout: 600
   nuclei_timeout: 900
   feroxbuster_timeout: 600
+  hydra_timeout: 3600
+  sqlmap_timeout: 600
+  bloodhound_timeout: 600
+  mimikatz_timeout: 300
   default_wordlist: "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
   subdomain_wordlist: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
 

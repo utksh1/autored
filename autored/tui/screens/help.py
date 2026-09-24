@@ -1,43 +1,68 @@
-"""HelpScreen — keybindings and phase reference.
+"""HelpScreen — keybindings + quick reference (spec §17.4).
 
-Spec reference: §17.4 (app.py references HelpScreen but does not provide
-an implementation; this minimal version satisfies the SCREENS registry).
+A simple modal-ish screen showing the AutoRed keybindings and a short
+"how to drive the TUI" reference. Pushed when the operator presses ``?``.
 """
-
 from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Markdown
 
-HELP_TEXT = """\
-# AutoRed — Help
+
+HELP_MARKDOWN = """\
+# AutoRed TUI — Quick Reference
 
 ## Keybindings
-  q          Quit
-  d          Dashboard
-  h / ?      This help screen
-  y          Approve HitL gate
-  n          Reject HitL gate
-  e          Edit command (HitL gate)
-  s          Skip HitL gate
-  escape     Reject HitL gate (same as n)
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit the app |
+| `d` | Open the Dashboard |
+| `?` | Open this Help screen |
+| `y` | (in HitL gate) Approve |
+| `n` | (in HitL gate) Reject |
+| `e` | (in HitL gate) Edit command |
+| `s` | (in HitL gate) Skip hypothesis |
+| `Esc` | (in HitL gate) Cancel |
 
 ## Phases
-  recon    Reconnaissance (subdomain enum, port scan, web enum)
-  vuln     Vulnerability analysis (CVE matching, hypothesis ranking)
-  exploit  Exploit Agent (HitL gate before each attempt)
-  postex   Post-exploitation (HitL gate per sub-activity)
-  lateral  Lateral movement (HitL gate per pivot)
-  cleanup  Cleanup Agent (removes all persistence artifacts)
-  report   Report Agent (generates final engagement report)
+
+`recon` → `vuln` → `exploit` → `postex` → `lateral` → `cleanup` → `report` → `done`
+
+## HitL gates
+
+When the Exploit Agent proposes a hypothesis, a HitL gate modal opens.
+Review the technique / CVE / command, then choose:
+
+- **y** (approve) — run the exploit as proposed
+- **n** (reject) — try the next ranked hypothesis
+- **e** (edit) — modify the command before running
+- **s** (skip) — skip this hypothesis without rejecting the engagement
+
+In sandbox / CI mode (`hitl_mode: auto_approve`), gates are auto-approved
+without blocking.
 """
 
 
 class HelpScreen(Screen):
-    """Help screen — keybindings and phases."""
+    """Screen showing keybindings + quick reference."""
+
+    DEFAULT_CSS = """
+    HelpScreen {
+        align: center middle;
+    }
+    HelpScreen > Markdown {
+        width: 80%;
+        height: 80%;
+        border: round $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    """
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(HELP_TEXT)
-        yield Footer()
+        # Markdown widget renders the headings + table properly. Wrap in
+        # a Static-like container for the border styling (Phase 6 will
+        # add scrollable container + search).
+        yield Markdown(HELP_MARKDOWN, id="help-markdown")

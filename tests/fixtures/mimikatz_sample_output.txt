@@ -1,0 +1,21 @@
+Authentication Id : 0 ; 996 (00000000:000003e8)
+Session           : Service from 0
+User Name         : WIN-SRV02$
+Domain            : GOAD
+Logon Server      : DC01
+Logon Time        : 9/21/2026 8:14:37 AM
+SID               : S-1-5-20
+        msv :
+         * Username : WIN-SRV02$
+         * Domain   : GOAD
+         * NTLM     : 31d6cfe0d16ae931b73c59d7e0c089c0
+         * SHA1     : 404f6f829ac855b7c9e1c3b2b2e0a1d4c5f6a7b8
+        tspkg :
+        wdigest :
+         * Username : administrator
+         * Domain   : GOAD
+         * Password : Password1!
+        kerberos :
+         * Username : administrator
+         * Domain   : GOAD
+         * NTLM     : 8a4f6d9c2b7e1f3a5d8c4b6e2f0a1d3c

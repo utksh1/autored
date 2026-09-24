@@ -1,54 +1,47 @@
-"""AgentStatusPanel widget — shows current agent status.
+"""AgentStatusPanel widget — currently-running agent + step (spec §17.4).
 
-Spec reference: §17.4 (AgentStatusPanel Widget).
+Shows the agent name (recon / vuln / exploit / postex / lateral / cleanup /
+report) and the current step within that agent. Empty when no agent is
+running.
 """
-
 from __future__ import annotations
-
-from datetime import datetime
 
 from textual.reactive import reactive
 from textual.widgets import Static
 
 
 class AgentStatusPanel(Static):
-    """Shows current agent name, what it's doing, how long."""
+    """Static widget showing the active agent + current step."""
 
-    agent_name = reactive("")
-    task_description = reactive("")
-    started_at = reactive(None)
-    tool_calls = reactive(0)
-    llm_calls = reactive(0)
+    DEFAULT_CSS = """
+    AgentStatusPanel {
+        height: 3;
+        padding: 0 1;
+        background: $surface;
+        border: round $accent;
+    }
+    """
+
+    agent_name: reactive[str] = reactive[str]("")
+    current_step: reactive[str] = reactive[str]("")
+    progress: reactive[float] = reactive[float](0.0)
+
+    def set_agent(self, agent_name: str, step: str = "") -> None:
+        """Update the active agent + step (called by the EventBus pump)."""
+        self.agent_name = agent_name
+        self.current_step = step
+
+    def clear(self) -> None:
+        """Reset back to idle — no agent running."""
+        self.agent_name = ""
+        self.current_step = ""
+        self.progress = 0.0
 
     def render(self) -> str:
         if not self.agent_name:
-            return "[dim]No active agent[/]"
-
-        elapsed = ""
-        if self.started_at:
-            delta = datetime.utcnow() - self.started_at
-            elapsed = f"{delta.seconds // 60}:{delta.seconds % 60:02d}"
-
+            return "[dim]idle — no agent running[/dim]"
+        step_str = f" → {self.current_step}" if self.current_step else ""
+        pct = int(self.progress * 100)
         return (
-            f"[bold cyan]{self.agent_name.upper()}[/] Agent\n"
-            f"\n"
-            f"Task: {self.task_description}\n"
-            f"Elapsed: {elapsed}\n"
-            f"Tool calls: {self.tool_calls}\n"
-            f"LLM calls: {self.llm_calls}\n"
+            f"[bold]{self.agent_name}[/bold]{step_str}  [dim]({pct}%)[/dim]"
         )
-
-    def update_agent(self, event: dict) -> None:
-        self.agent_name = event["agent"]
-        self.task_description = event.get("task", "")
-        started = event.get("started_at")
-        if started:
-            try:
-                self.started_at = datetime.fromisoformat(started)
-            except (ValueError, TypeError):
-                self.started_at = None
-        else:
-            self.started_at = None
-        # Reset counters on new agent
-        self.tool_calls = 0
-        self.llm_calls = 0

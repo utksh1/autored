@@ -4,12 +4,23 @@ Sorry, try again.
 sudo: 1 incorrect password attempt
 
 ╚══════════╣ SUID - Check easy privesc methods for file
-═╣ CVEs
-═╣ CVE-2022-0847      ╚ https://x.com/mxr0se/status/1502294156212273155
-═╣ CVE-2021-4034      ╚ https://github.com/berdav/CVE-2021-4034
+/usr/bin/find
+/usr/bin/python3
+/usr/bin/bash
+/usr/bin/vim.basic
+/usr/bin/ps
+
+╚══════════╣ CVEs
+═╣ CVE-2022-0847  ╚ https://x.com/mxr0se/status/1502294156212273155
+═╣ CVE-2021-4034  ╚ https://github.com/berdav/CVE-2021-4034
+═╣ CVE-2016-1531  ╚ https://github.com/jaminz/cve-2016-1531
 
 ╚══════════╣ .bash_profile
 # User specific environment and startup programs
+PATH=$PATH:/usr/local/bin
+export PATH
 
 ╚══════════╣ Cron jobs
 * * * * * root /usr/bin/python3 /opt/backup.py
+0 2 * * * root /usr/local/bin/cleanup.sh
+30 4 * * 0 www-data /opt/scripts/weekly_report.sh

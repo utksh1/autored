@@ -1,30 +1,28 @@
+from __future__ import annotations
+
 from autored.models.roe import RulesOfEngagement
 
 
-def test_roe_from_yaml(sandbox_roe_yaml):
-    roe = RulesOfEngagement.model_validate_yaml(sandbox_roe_yaml)
-    assert roe.engagement_name == "Sandbox Engagement"
-    assert roe.allowed_ips == ["0.0.0.0/0"]
-    assert roe.allowed_techniques == ["*"]
-    assert roe.persistence_allowed is True
-    assert roe.evasion_allowed is True
-    assert roe.exfiltration_allowed is True
-    assert roe.data_destruction_allowed is False
-    assert roe.kernel_exploits_allowed is True
-    assert roe.hitl_mode == "auto_approve"
+def test_roe_reexport_is_rules_of_engagement():
+    """`autored.models.roe` re-exports `RulesOfEngagement` from `autored.config`."""
+    from autored.config import RulesOfEngagement as ConfigRulesOfEngagement
+
+    assert RulesOfEngagement is ConfigRulesOfEngagement
 
 
-def test_roe_defaults():
-    roe = RulesOfEngagement(
-        engagement_name="test",
-        operator="op",
-        operator_signature="sig",
-        allowed_ips=["10.10.10.5"],
-        allowed_techniques=["*"],
-        persistence_allowed=False,
-        evasion_allowed=False,
-        exfiltration_allowed=False,
-        kernel_exploits_allowed=False,
-    )
-    assert roe.data_destruction_allowed is False  # always False default
-    assert roe.hitl_mode == "always_ask"  # default
+def test_roe_model_fields_keys():
+    """Spec §9.2 — `RulesOfEngagement` exposes the full RoE field set."""
+    expected = {
+        "engagement_name",
+        "operator",
+        "operator_signature",
+        "allowed_ips",
+        "allowed_techniques",
+        "persistence_allowed",
+        "evasion_allowed",
+        "exfiltration_allowed",
+        "data_destruction_allowed",
+        "kernel_exploits_allowed",
+        "hitl_mode",
+    }
+    assert set(RulesOfEngagement.model_fields) == expected

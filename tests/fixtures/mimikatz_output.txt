@@ -17,3 +17,7 @@ SID               : S-1-5-18
          * Username : Administrator
          * Domain   : CORP
          * Password : P@ssw0rd123!
+        kerberos :
+         * Username : svc_web
+         * Domain   : CORP
+         * Password : Summer2024!

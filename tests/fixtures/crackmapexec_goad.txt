@@ -1,0 +1,2 @@
+SMB         192.168.56.22     445    SRV02           [*] Windows 10 / Server 2019 Build 17763 (name:SRV02) (domain:NORTH.SOUTH.LOCAL) (signing:False) (SMBv1:False)
+SMB         192.168.56.22     445    SRV02           [+] NORTH.SOUTH.LOCAL\administrator:31d6cfe0d16ae931b73c59d7e0c089c0 (Pwn3d!)

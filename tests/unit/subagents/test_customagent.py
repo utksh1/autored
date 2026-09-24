@@ -1,5 +1,12 @@
+"""Tests for the customagent sub-agent (Phase 3, Task 8).
+
+Verifies that ``customagent_subagent`` is a thin wrapper around
+``custom_command.ainvoke({...})`` and faithfully returns the
+``CustomResult`` (stdout, returncode, success flag).
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.customagent import customagent_subagent
 from autored.tools.custom import CustomResult
 

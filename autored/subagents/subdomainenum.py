@@ -35,7 +35,22 @@ async def subdomainenum_subagent(
         "engagement_id": engagement_id,
     })
 
-    subfinder_result, amass_result = await asyncio.gather(subfinder_task, amass_task)
+    subfinder_result, amass_result = await asyncio.gather(
+        subfinder_task, amass_task, return_exceptions=True,
+    )
+
+    # With return_exceptions=True, a failure in subfinder or amass comes
+    # back as an Exception instance rather than cancelling the other. Treat
+    # a failed tool as an empty result so we still surface whatever the
+    # other tool found.
+    def _empty_or(result):
+        if isinstance(result, Exception):
+            log.warning("subdomainenum_tool_failed", error=str(result))
+            return SubdomainList(domain=domain, subdomains=[], sources=[])
+        return result
+
+    subfinder_result = _empty_or(subfinder_result)
+    amass_result = _empty_or(amass_result)
 
     # Merge and dedupe (preserve first-seen order)
     all_subs = subfinder_result.subdomains + amass_result.subdomains

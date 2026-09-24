@@ -1,5 +1,12 @@
+"""Tests for the bruteagent sub-agent (Phase 3, Task 8).
+
+Verifies that ``bruteagent_subagent`` is a thin wrapper around
+``hydra_brute.ainvoke({...})`` and faithfully returns the
+``BruteResult`` (success flag + credential list).
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.bruteagent import bruteagent_subagent
 from autored.tools.hydra import BruteResult, BruteCredential
 

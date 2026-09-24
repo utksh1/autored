@@ -20,7 +20,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from autored.logging import get_logger
-from autored.router import get_model
+from autored.router import _is_refusal, get_model
 
 log = get_logger("subagents.hypothesiscritic")
 
@@ -110,6 +110,15 @@ async def hypothesiscritic_subagent(
         hypotheses_json=json.dumps(hypotheses, indent=2),
     )
     response = await model.ainvoke(prompt)
+    # Refusal detection centralised in router (Review Focus #4). If the
+    # second-opinion model declines rather than producing JSON, return an
+    # empty critique — the Vuln Agent's self-critique loop treats "no
+    # critique" as "DeepSeek had nothing actionable to say", so a refusal
+    # is indistinguishable from a no-opinion response (graceful
+    # degradation).
+    if _is_refusal(response):
+        log.warning("hypothesiscritic_refused", engagement_id=engagement_id)
+        return CritiqueOutput(critique=[])
     critique = _parse_critique_response(response.content)
 
     log.info("hypothesiscritic_done", verdicts=[c.get("verdict") for c in critique])

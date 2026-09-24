@@ -1,26 +1,31 @@
 [project]
 name = "autored"
 version = "0.1.0"
-description = "AutoRed — Autonomous Red Team Copilot"
+description = "Semi-autonomous red-team copilot — full kill chain: recon → vuln → exploit → post-ex → lateral → cleanup → report"
 requires-python = ">=3.12"
 dependencies = [
-    "langgraph==0.2.45",
-    "langchain-anthropic==0.2.4",
-    "langchain-openai==0.2.10",
-    "anthropic>=0.40.0",
-    "pydantic==2.9.2",
-    "typer==0.12.5",
-    "click>=8.0,<8.2",
-    "rich==13.9.2",
-    "structlog==24.4.0",
-    "chromadb==0.5.13",
-    "sqlalchemy==2.0.36",
-    "aiosqlite==0.20.0",
-    "pyyaml==6.0.2",
-    "langgraph-checkpoint-sqlite>=2.0.11",
-    "msgpack==1.1.0",
-    "textual==0.79.1",
-    "impacket==0.12.0",
+    "langgraph>=0.2.45",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langchain-anthropic>=0.2.0",
+    "langchain-openai>=0.2.10",
+    "langchain-core>=0.3.21",
+    "anthropic>=0.39.0",
+    "pydantic>=2.9.2",
+    "typer>=0.12.5",
+    "rich>=13.9.2",
+    "textual>=0.79.1",
+    "structlog>=24.4.0",
+    "chromadb>=0.5.13",
+    "sqlalchemy>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "neo4j>=5.25.0",
+    "weasyprint>=62.3",
+    "markdown>=3.7",
+    "msgpack>=1.1.0",
+    "impacket>=0.12.0",
+    "httpx>=0.28.1",
+    "pyyaml>=6.0.2",
+    "cryptography>=43.0.0",
 ]
 
 [project.optional-dependencies]
@@ -28,29 +33,32 @@ dev = [
     "pytest==8.3.3",
     "pytest-asyncio==0.24.0",
     "pytest-cov==5.0.0",
+    "pytest-httpx==0.35.0",
     "ruff==0.7.1",
 ]
 
 [project.scripts]
 autored = "autored.cli:app"
 
-[tool.ruff]
-line-length = 100
-target-version = "py312"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["autored"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.uv]
-package = true
-dev-dependencies = [
-    "pytest==8.3.3",
-    "pytest-asyncio==0.24.0",
-    "pytest-cov==5.0.0",
-    "pytest-httpx==0.35.0",
-    "ruff==0.7.1",
+addopts = "-v --tb=short"
+markers = [
+    "e2e: marks end-to-end tests against live targets (deselect with '-m \"not e2e\"')",
 ]
 
-[tool.setuptools.packages.find]
-include = ["autored*"]
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]
+ignore = ["E501"]  # line length handled by formatter

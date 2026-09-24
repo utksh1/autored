@@ -1,9 +1,20 @@
 {
   "enumeration_steps": [
-    {"subagent": "windowsenum", "args": {"foothold_id": "f1", "host_ip": "10.10.10.5"}}
+    {
+      "subagent": "windowsenum",
+      "args": {
+        "foothold_id": "f1",
+        "host_ip": "10.10.10.5"
+      }
+    }
   ],
   "privesc_plan": [],
   "persistence_plan": [
-    {"subagent": "persistenceagent", "args": {"os_type": "windows"}}
+    {
+      "subagent": "persistenceagent",
+      "args": {
+        "os_type": "windows"
+      }
+    }
   ]
 }

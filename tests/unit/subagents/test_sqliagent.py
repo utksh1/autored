@@ -1,5 +1,13 @@
+"""Tests for the sqliagent sub-agent (Phase 3, Task 7).
+
+Verifies that ``sqliagent_subagent`` is a thin wrapper around
+``sqlmap_run.ainvoke({...})`` and faithfully returns the
+``SqlmapResult`` (vulnerable flag, injection points, dbms) without
+mutating it.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.sqliagent import sqliagent_subagent
 from autored.tools.sqlmap import SqlmapResult, InjectionPoint
 

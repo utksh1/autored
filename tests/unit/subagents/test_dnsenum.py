@@ -1,5 +1,12 @@
+"""Tests for the dnsenum sub-agent (Phase 1, Task 19).
+
+Verifies that ``dnsenum_subagent`` calls ``dns_resolve`` and returns
+the first ``DnsResult`` matching the requested hostname, falling back
+to an empty ``DnsResult`` when no records are found.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
+
 from autored.subagents.dnsenum import dnsenum_subagent
 from autored.tools.dnsx import DnsOutput, DnsResult, DnsRecord
 

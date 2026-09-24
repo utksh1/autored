@@ -1,6 +1,19 @@
+"""AutoRed nuclei tool wrapper — Phase 1, Task 10.
+
+Runs the nuclei vulnerability scanner with JSONL output and parses findings
+into a list of ``NucleiResult`` Pydantic models.
+
+Reuses ``_save_raw`` from ``autored.tools.nmap`` (Task 7) so every tool
+wrapper persists raw artefacts via the same path scheme.
+
+Decorator order note (Ruling 1 in the SDD ledger): ``@tool`` is applied
+OUTERMOST and ``@roe_guard`` INNER. The brief spec'd the opposite order
+(``@roe_guard`` over ``@tool``), but that produces a StructuredTool that
+is not callable via ``.ainvoke({...})`` at runtime — see Batch A review.
+"""
+from __future__ import annotations
+
 import json
-from datetime import datetime
-from pathlib import Path
 from typing import Literal
 
 from langchain_core.tools import tool
@@ -9,16 +22,18 @@ from pydantic import BaseModel, Field
 from autored.logging import get_logger
 from autored.roe_guard import roe_guard
 from autored.subprocess_runner import run_subprocess
-from autored.tools.nmap import _save_raw
+from autored.tools.nmap import _save_raw  # reuse from nmap
 
 log = get_logger("tools.nuclei")
+
+Severity = Literal["info", "low", "medium", "high", "critical"]
 
 
 class NucleiResult(BaseModel):
     template_id: str
     template_url: str = ""
     matched_at: str
-    severity: Literal["info", "low", "medium", "high", "critical"]
+    severity: Severity
     type: str = ""
     description: str = ""
     reference: list[str] = Field(default_factory=list)
@@ -36,14 +51,21 @@ class NucleiOutput(BaseModel):
 
 
 def _build_nuclei_cmd(target: str, templates: list[str]) -> list[str]:
-    cmd = ["nuclei", "-u", target, "-jsonl", "-silent"]
+    """Build a nuclei argv list. Output goes to stdout as JSONL."""
+    cmd: list[str] = ["nuclei", "-u", target, "-jsonl", "-silent"]
     for t in templates:
         cmd.extend(["-t", t])
     return cmd
 
 
 def _parse_nuclei_jsonl(text: str) -> list[NucleiResult]:
-    results = []
+    """Parse nuclei JSONL stdout into a list of NucleiResult.
+
+    Skips blank/malformed lines (logged at warning) so a single bad line
+    doesn't lose the whole scan. Coerces severity to the literal set —
+    unknown values collapse to ``info``.
+    """
+    results: list[NucleiResult] = []
     for line in text.strip().splitlines():
         if not line:
             continue
@@ -53,18 +75,30 @@ def _parse_nuclei_jsonl(text: str) -> list[NucleiResult]:
             severity = data.get("severity", "info").lower()
             if severity not in ("info", "low", "medium", "high", "critical"):
                 severity = "info"
-            results.append(NucleiResult(
-                template_id=data.get("template-id", data.get("templateID", "")),
-                template_url=data.get("template-url", data.get("templateURL", "")),
-                matched_at=data.get("matched-at", data.get("matched", "")),
-                severity=severity,
-                type=data.get("type", ""),
-                description=data.get("description", data.get("info", {}).get("description", "")),
-                reference=data.get("reference", []),
-                cvss_score=data.get("cvss-score") or data.get("classification", {}).get("cvss-score"),
-                cve=data.get("cve") or (data.get("classification", {}).get("cve-id", [""])[0] if data.get("classification", {}).get("cve-id") else None),
-                extracted_data=data.get("extracted", {}),
-            ))
+            results.append(
+                NucleiResult(
+                    template_id=data.get("template-id", data.get("templateID", "")),
+                    template_url=data.get(
+                        "template-url", data.get("templateURL", "")
+                    ),
+                    matched_at=data.get("matched-at", data.get("matched", "")),
+                    severity=severity,  # type: ignore[arg-type]
+                    type=data.get("type", ""),
+                    description=data.get(
+                        "description", data.get("info", {}).get("description", "")
+                    ),
+                    reference=data.get("reference", []),
+                    cvss_score=data.get("cvss-score")
+                    or data.get("classification", {}).get("cvss-score"),
+                    cve=data.get("cve")
+                    or (
+                        data.get("classification", {}).get("cve-id", [""])[0]
+                        if data.get("classification", {}).get("cve-id")
+                        else None
+                    ),
+                    extracted_data=data.get("extracted", {}),
+                )
+            )
         except (json.JSONDecodeError, KeyError) as e:
             log.warning("nuclei_parse_line_failed", line=line, error=str(e))
     return results
@@ -95,10 +129,17 @@ async def nuclei_scan(
     log.info("nuclei_start", target=target, templates=templates)
 
     result = await run_subprocess(cmd, timeout=900)
-    raw_path = await _save_raw("nuclei", target, result.stdout, result.stderr, engagement_id)
+    raw_path = await _save_raw(
+        "nuclei", target, result.stdout, result.stderr, engagement_id
+    )
 
     results = _parse_nuclei_jsonl(result.stdout)
-    log.info("nuclei_done", target=target, findings=len(results), duration=result.duration_sec)
+    log.info(
+        "nuclei_done",
+        target=target,
+        findings=len(results),
+        duration=result.duration_sec,
+    )
 
     return NucleiOutput(
         target=target,

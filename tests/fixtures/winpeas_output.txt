@@ -1,6 +1,8 @@
 ╚══════════╣ Modifiable Services
 SC_MANAGER_CONNECT
 SC_MANAGER_CONNECT
+SERVICE_QUERY_STATUS
+SERVICE_CHANGE_CONFIG
 
 ╚══════════╣ Checking for Autologon Registry
 DefaultDomainName    :  CORP
@@ -9,3 +11,7 @@ DefaultPassword      :  P@ssw0rd123!
 
 ╚══════════╣ Unattended Files
 C:\Windows\Panther\Unattend.xml
+C:\Windows\Panther\Unattended\unattended.xml
+
+╚══════════╣ Registry
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run: \Program Files\Backdoor.exe

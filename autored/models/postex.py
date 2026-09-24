@@ -1,29 +1,24 @@
-"""Post-Ex (Phase 4) Pydantic models.
+"""Post-Ex models — Phase 4 (spec §16).
 
-Eight models that capture the structured state produced by the six
-Post-Ex sub-activities (enumeration, privesc, persistence, evasion,
-exfil, cleanup prep):
+Each model captures a single post-exploitation artefact so the
+EngagementState can round-trip the kill chain's later phases:
 
-* ``User``                       — local account discovered on a foothold host.
-* ``Secret``                     — credential / config / key harvested from a host.
-* ``Trust``                      — domain / SSH / NFS / SMB / Kerberos trust link.
-* ``PrivescCandidate``           — a privilege-escalation path identified by the
-                                   PrivescFinder sub-agent.
-* ``PrivescAttempt``             — the result of actually executing a candidate.
-* ``PersistenceArtifact``        — a persistence foothold installed on a host
-                                   (Review Focus #3: ``removal_command`` is
-                                   required — the Phase 5 Cleanup Agent runs
-                                   it verbatim).
-* ``EvasionAction``              — a defense-evasion action (AMSI bypass, ETW
-                                   patch, log clear, defender disable, process
-                                   injection).
-* ``ExfilEvidence``              — proof of a successful exfiltration (method,
-                                   size, catch-server log path).
+  * ``User`` / ``Secret`` / ``Trust`` — enumeration output from
+    linpeas/winpeas/mimikatz/secretsdump/certipy.
+  * ``PrivescCandidate`` / ``PrivescAttempt`` — the privesc loop
+    (find candidate → attempt → record outcome).
+  * ``PersistenceArtifact`` — every persistence implant with a
+    mandatory ``removal_command`` (spec §6.4, §9.2 — review focus:
+    persistence MUST be reversible).
+  * ``EvasionAction`` — every evasion technique applied.
+  * ``ExfilEvidence`` — provenance record for exfil events,
+    including the catch-server log path (spec §6.8).
 
-These mirror the spec §9.2 table and are persisted on the
-``EngagementState`` via ``default_factory=list`` so existing Phase 1-3
-tests do not need to know about Phase 4.
+All eight live in a single module per the Phase 4 T1 brief — the
+grain is "phase" rather than "model" for the post-ex cluster.
 """
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Literal
 from uuid import uuid4
@@ -32,7 +27,7 @@ from pydantic import BaseModel, Field
 
 
 class User(BaseModel):
-    """A local account enumerated on a foothold host."""
+    """Local account enumerated on a foothold host."""
 
     host_ip: str
     username: str
@@ -43,7 +38,7 @@ class User(BaseModel):
 
 
 class Secret(BaseModel):
-    """A credential / key / config / token harvested from a host."""
+    """A harvested credential or sensitive config blob."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     host_ip: str
@@ -54,7 +49,7 @@ class Secret(BaseModel):
 
 
 class Trust(BaseModel):
-    """A trust relationship (AD domain, SSH, NFS, SMB, Kerberos) on a host."""
+    """A trust relationship discovered on a host (AD domain, NFS export, etc.)."""
 
     host_ip: str
     trust_type: Literal["ad_domain", "ssh_trust", "nfs_export", "smb_share", "kerberos"]
@@ -63,8 +58,21 @@ class Trust(BaseModel):
 
 
 class PrivescCandidate(BaseModel):
-    """A privilege-escalation path identified by the PrivescFinder sub-agent."""
+    """A candidate privesc path surfaced by linpeas/winpeas/manual review.
 
+    ``removal_command`` is how to undo any changes the exploit makes
+    (e.g., remove a setuid binary, drop a file). ``None`` if the
+    exploit needs no cleanup.
+
+    ``id`` is a stable UUID per candidate so the ``PrivescAttempt``'s
+    ``candidate_id`` foreign key can distinguish multiple attempts
+    against the same host (Phase 4 fix wave I5 — previously the
+    Post-Ex Agent set ``candidate_id = foothold.host_ip`` which
+    collapsed distinct candidates on the same host into the same
+    attempt record).
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
     host_ip: str
     technique: str
     category: Literal["misconfig", "app_system", "kernel"]
@@ -75,7 +83,7 @@ class PrivescCandidate(BaseModel):
 
 
 class PrivescAttempt(BaseModel):
-    """The result of actually executing a PrivescCandidate."""
+    """A single attempted privesc, linked back to its candidate."""
 
     candidate_id: str
     host_ip: str
@@ -86,10 +94,14 @@ class PrivescAttempt(BaseModel):
 
 
 class PersistenceArtifact(BaseModel):
-    """A persistence foothold installed on a host.
+    """A persistence implant with a MANDATORY ``removal_command``.
 
-    Review Focus #3: ``removal_command`` is REQUIRED. The Phase 5
-    Cleanup Agent runs it verbatim to tear the artifact down.
+    Spec §6.4 / §9.2 — every persistence artefact must be reversible;
+    the Cleanup Agent (Phase 5) walks ``persistence_artifacts`` and
+    runs ``removal_command`` on each. The ``host_ip`` field name
+    resolves the spec §6.4 "host" vs. Phase 4 plan §9.2 "host_ip"
+    ambiguity in favour of the Phase 4 plan (consistent with every
+    other post-ex model).
     """
 
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -112,12 +124,16 @@ class PersistenceArtifact(BaseModel):
 
 
 class EvasionAction(BaseModel):
-    """A defense-evasion action executed against a host."""
+    """A single defensive-evasion action (AMS bypass, ETW patch, etc.)."""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     host_ip: str
     technique: Literal[
-        "amsi_bypass", "etw_patch", "log_clear", "defender_disable", "process_injection"
+        "amsi_bypass",
+        "etw_patch",
+        "log_clear",
+        "defender_disable",
+        "process_injection",
     ]
     target: str  # what was evaded
     success: bool
@@ -126,7 +142,12 @@ class EvasionAction(BaseModel):
 
 
 class ExfilEvidence(BaseModel):
-    """Proof of a successful data exfiltration."""
+    """Provenance record for an exfiltration event.
+
+    Spec §6.8 — every exfil must be traceable to a catch-server log so
+    the operator (and report) can prove what left the scope, where it
+    went, and how big it was.
+    """
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     method: Literal["https", "dns", "icmp", "smb"]

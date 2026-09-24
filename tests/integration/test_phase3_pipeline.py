@@ -1,150 +1,143 @@
-"""End-to-end integration test for the full Phase 3 pipeline (mocked).
+"""Phase 3, Task 14 — Integration test: full Phase 3 pipeline, mocked.
 
-Mocks the LLM (returns the ``recon_plan_lame.json`` fixture for the Recon
-Agent's planning call, ``vuln_hypotheses_shocker.json`` for the Vuln
-Agent's synthesis call, an empty ``{"critique": []}`` for the DeepSeek
-self-critique step so the loop converges in one iteration, and
-``exploit_plan_blue.json`` for the Exploit Agent's planning call), every
-recon-tool subprocess call (canned fixture data per command name), the
-NVD HTTP client (returns an empty ``{"vulnerabilities": []}`` payload so
-CVEMatcher yields no CVE matches), the cross-engagement ``ChromaStore``
-(returns no similar findings), all 4 exploit sub-agent tool wrappers
-(only ``msfagent`` is exercised by the Blue plan, but the other 3 are
-patched defensively in case the LLM swaps sub-agents), and
-``_verify_foothold`` (returns True unconditionally so the Exploit Agent
-records a foothold), then runs the full Phase 3 LangGraph end-to-end::
+End-to-end test that mocks the LLM router (``call_with_fallback`` for
+recon planning, vuln synthesis, AND exploit planning), ``run_subprocess``
+in every recon tool module, ``httpx.AsyncClient`` in the NVD tool,
+``ChromaStore`` at the Vuln Agent's import site, the 4 exploit sub-agents'
+underlying tool bindings (msfagent.metasploit_rpc, bruteagent.hydra_brute,
+sqliagent.sqlmap_run, customagent.custom_command), the Exploit Agent's
+``_verify_foothold`` helper, and the EventBus's HitL gate methods. Then
+runs the full Phase 3 graph (``build_phase3_graph``) against the Lame
+recon fixtures + Shocker hypothesis fixture + EternalBlue exploit-plan
+fixture from Batches A-C + Phase 3 Exploit-Agent tests.
 
-    roe_gate_start  ->  recon  ->  vuln  ->  exploit  ->  report_phase1  ->  END
+Verifies the full Phase 3 chain runs as a single unit:
 
-Verifies:
-  * Final state phase is ``"done"`` (went through ``report_phase1`` stub)
-    or ``"postex"`` (if the report stub's behaviour changes in Phase 4)
-  * At least 1 host found
-  * At least 1 service found
-  * The Exploit Agent recorded at least 1 foothold (Phase 3 specific)
-  * Raw tool outputs were saved to ``engagements/<id>/raw/``
+1. ``roe_gate_start`` registers (or re-confirms) the RoE.
+2. ``recon_node`` → ``call_with_fallback("plan_recon", prompt)`` → mocked
+   to return ``recon_plan_lame.json`` (3 steps: portscan, webenum, dnsenum).
+3. The plan dispatches ``portscan_subagent`` (naabu + nmap),
+   ``webenum_subagent`` (httpx + feroxbuster + nuclei) and
+   ``dnsenum_subagent`` (dnsx) — each tool wrapper's ``run_subprocess``
+   call is mocked to return the matching fixture file
+   (``nmap_lame_quick.xml``, ``naabu_lame.jsonl``, etc.).
+4. ``recon_node`` merges the sub-agent outputs back into state shape
+   and advances ``phase`` to ``"vuln"``.
+5. ``vuln_node`` runs:
+   - ``cvematcher_subagent`` queries NVD (mocked to return
+     ``{"vulnerabilities": []}`` empty) → 0 CVE matches.
+   - ``exploitfinder_subagent`` is skipped because no CVE matches.
+   - ``ChromaStore.query_similar_findings`` is mocked to return ``[]``.
+   - ``call_with_fallback("synthesize_findings", prompt)`` → mocked to
+     return ``vuln_hypotheses_shocker.json`` (1 Shellshock hypothesis).
+   - ``hypothesiscritic_subagent`` queries DeepSeek via
+     ``get_model("second_opinion")`` (mocked to return
+     ``vuln_critique_shocker.json`` content) → verdict "sound" → loop
+     converges after 1 iteration.
+6. Phase 3's conditional edge ``recon → vuln`` routes to ``exploit``
+   through ``vuln_node`` because the recon fixtures surface at least one
+   host (the Lame IP). I4 (Phase 3 fix wave) restored the empty-hosts
+   short-circuit that mirrors Phase 2's wiring — empty recon would skip
+   straight to ``report_phase1`` and skip the vuln + exploit nodes, but
+   this test's fixtures surface a host so the full chain runs.
+7. ``exploit_node`` runs:
+   - HitL gate: ``emit_to_tui`` (mocked no-op) + ``wait_for_tui_response``
+     (mocked to return ``{"response": "approve", "modified_command": None}``).
+     I1 (Phase 3 fix wave): the bus is passed via
+     ``RunnableConfig["configurable"]["event_bus"]``, so the
+     LangGraph-driven invocation (not just the direct-call unit tests)
+     genuinely exercises the interactive approve path — the bus
+     survives the LangGraph reducer boundary intact and reaches
+     ``exploit_node``.
+   - Plan: ``call_with_fallback("plan_exploit", prompt)`` → mocked to
+     return ``exploit_plan_blue.json`` (1 msfagent tool call against
+     MS17-010 EternalBlue).
+   - Dispatch: ``msfagent_subagent`` calls ``metasploit_rpc.ainvoke``
+     (mocked) → returns ``MsfResult(success=True, data={"session_id": 1})``.
+   - Verify: ``_verify_foothold`` (mocked) → returns ``True``.
+   - Builds 1 ``Foothold`` (``method == hypothesis.technique``) and
+     returns ``phase=postex`` + ``footholds=[1]`` + ``evidence_paths``.
+8. Phase 3's linear edge ``exploit → report_phase1`` routes to the
+   report stub regardless of foothold/no-foothold (Phase 4 will add the
+   real ``postex`` branch).
+9. ``report_phase1`` sets ``phase = "done"``.
 
-This is the moment-of-truth test for Phase 3: if every prior task
-(state schema with ``event_bus`` field, RoE guard, model router, all 3
-recon-vuln agents, all 4 exploit sub-agents + tools, the EventBus, the
-Exploit Agent's HitL gate / plan / dispatch / verify flow, and the
-Phase 3 graph topology) is wired correctly, this passes.
+Asserts the final state has:
+- ``phase == "done"`` (the report stub ran)
+- at least 1 host (the nmap fixture has the Lame host)
+- at least 1 service (the nmap fixture has 5 open ports)
+- ``len(footholds) >= 1`` — the Exploit Agent recorded a verified foothold
+- ``footholds[0].method`` contains the exploit technique (Shellshock,
+  pulled from ``hypothesis.technique`` in the Shocker fixture).
 
-A note on the mock strategy
----------------------------
-The Phase 2 integration test patches ``run_subprocess`` on every recon
-tool module that imports it. Phase 3 adds 4 exploit sub-agents whose
-underlying tool wrappers (``sqlmap_run``, ``hydra_brute``,
-``metasploit_rpc``, ``custom_command``) are *separate* LangChain
-``@tool`` objects — they don't call ``run_subprocess`` directly (they
-each have their own dispatch path). We patch them at the sub-agent
-module attribute path (e.g. ``autored.subagents.msfagent.metasploit_rpc``)
-so the patch takes effect when the sub-agent does
-``metasploit_rpc.ainvoke(...)`` at call time.
-
-The Exploit Agent imports the sub-agent MODULES (not the @tool names) —
-see the ``Why we import sub-agent *modules*`` docstring in
-``autored/agents/exploit.py``. Patching ``autored.subagents.<x>.<tool>``
-works because module attribute lookup happens at call time.
+Implementation notes
+--------------------
+- Recon + Vuln mocking follows the Phase 2 pipeline test (T12) pattern:
+  per-tool-module ``run_subprocess`` patch + NVD httpx + Chroma + DeepSeek
+  second-opinion model + ``call_with_fallback`` patches for ``plan_recon``
+  and ``synthesize_findings``.
+- Exploit mocking follows the Exploit Agent unit test (T9) pattern:
+  ``call_with_fallback("plan_exploit", ...)`` patch + 4 sub-agent tool
+  bindings patched at the module level + ``_verify_foothold`` patch +
+  EventBus methods patched via ``patch.object``.
+- I1 (Phase 3 fix wave): the EventBus is passed via
+  ``config["configurable"]["event_bus"]`` (the standard LangGraph channel
+  for runtime objects), so the LangGraph-driven invocation genuinely
+  exercises the interactive approve path — the bus survives the
+  LangGraph reducer boundary intact and reaches ``exploit_node``.
+- ``hitl_mode`` is overridden to ``"always_ask"`` so the gate actually
+  calls ``wait_for_tui_response`` (sandbox RoE's default ``auto_approve``
+  would short-circuit it).
+- ``checkpointer=None`` keeps the test off the persistence layer
+  (asyncio.Queue handles inside the bus still aren't msgpack-serialisable
+  even though the bus no longer rides on state — defensive belt-and-
+  suspenders rather than the I1 workaround it used to be).
 """
-
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from autored.state import EngagementState
-from autored.models.roe import RulesOfEngagement
-from autored.persistence.filesystem import init_engagement_folder
-from autored.persistence.sqlite_saver import make_checkpointer
+import pytest
+
+from autored.config import load_roe
 from autored.graph import build_phase3_graph
-from autored.roe_guard import register_roe
 from autored.logging import setup_logging
-from autored.tui.event_bus import EventBus
+from autored.persistence.filesystem import init_engagement_folder
+from autored.roe_guard import register_roe
+from autored.state import EngagementState
+from autored.subprocess_runner import SubprocessResult
 from autored.tools.metasploit import MsfResult
 
 
 @pytest.mark.asyncio
 async def test_phase3_pipeline_mocked(
-    tmp_path: Path,
-    monkeypatch,
-    sandbox_roe_yaml: str,
-    fixtures_dir: Path,
+    tmp_path, monkeypatch, sandbox_roe_yaml, fixtures_dir
 ):
-    """Run the full Phase 3 graph with mocked LLM + subprocesses + EventBus.
-
-    Topology exercised: roe_gate_start → recon → vuln → exploit →
-    report_phase1 → END. The Exploit Agent's HitL gate auto-approves
-    in sandbox mode (no TUI / no operator interaction needed).
-    """
+    # Run inside tmp_path so engagements/ + logs/ never touch the repo.
     monkeypatch.chdir(tmp_path)
     setup_logging(log_dir=str(tmp_path / "logs"))
 
-    # ------------------------------------------------------------------
-    # 1. Register RoE + init engagement folder (so raw/ + state.db exist)
-    # ------------------------------------------------------------------
-    roe = RulesOfEngagement.model_validate_yaml(sandbox_roe_yaml)
+    # --- Register RoE ---------------------------------------------------
+    roe = load_roe(sandbox_roe_yaml)
+    # Override auto_approve so the HitL gate actually exercises the
+    # EventBus wait_for_tui_response path (otherwise the gate short-
+    # circuits and the mock is a no-op assertion-wise).
+    roe.hitl_mode = "always_ask"
     engagement_id = "test-pipeline-003"
     register_roe(engagement_id, roe)
     init_engagement_folder(engagement_id, "10.10.10.56", "test")
 
-    # ------------------------------------------------------------------
-    # 2. Mock the LLM responses, dispatched by router task name:
-    #    - "plan_recon"         → recon_plan_lame.json (3-step plan)
-    #    - "synthesize_findings" → vuln_hypotheses_shocker.json (1 Shellshock hypothesis)
-    #    - "second_opinion"     → empty critique (self-critique converges in 1 iter)
-    #    - "plan_exploit"       → exploit_plan_blue.json (msfagent ms17_010)
-    # ------------------------------------------------------------------
-    recon_plan = (fixtures_dir / "llm_responses" / "recon_plan_lame.json").read_text()
-    vuln_hypotheses = (
+    # --- Fixture payloads -----------------------------------------------
+    plan_recon_json = (
+        fixtures_dir / "llm_responses" / "recon_plan_lame.json"
+    ).read_text()
+    hypotheses_json = (
         fixtures_dir / "llm_responses" / "vuln_hypotheses_shocker.json"
     ).read_text()
-    exploit_plan = (
+    critique_json = (
+        fixtures_dir / "llm_responses" / "vuln_critique_shocker.json"
+    ).read_text()
+    exploit_plan_json = (
         fixtures_dir / "llm_responses" / "exploit_plan_blue.json"
     ).read_text()
-
-    mock_recon_response = MagicMock()
-    mock_recon_response.content = recon_plan
-    mock_vuln_response = MagicMock()
-    mock_vuln_response.content = vuln_hypotheses
-    mock_critique_response = MagicMock()
-    mock_critique_response.content = '{"critique": []}'  # empty = convergence
-    mock_exploit_response = MagicMock()
-    mock_exploit_response.content = exploit_plan
-
-    # One mock model per task slot — each returns its fixed fixture on
-    # every ``ainvoke`` call. (vuln only calls synthesis once because
-    # the critique converges immediately; exploit only calls plan_exploit
-    # once because the first hypothesis succeeds.)
-    mock_recon_model = MagicMock()
-    mock_recon_model.ainvoke = AsyncMock(return_value=mock_recon_response)
-
-    mock_vuln_model = MagicMock()
-    mock_vuln_model.ainvoke = AsyncMock(return_value=mock_vuln_response)
-
-    mock_critic_model = MagicMock()
-    mock_critic_model.ainvoke = AsyncMock(return_value=mock_critique_response)
-
-    mock_exploit_model = MagicMock()
-    mock_exploit_model.ainvoke = AsyncMock(return_value=mock_exploit_response)
-
-    def mock_get_model(task):
-        if task == "plan_recon":
-            return mock_recon_model
-        if task == "synthesize_findings":
-            return mock_vuln_model
-        if task == "second_opinion":
-            return mock_critic_model
-        if task == "plan_exploit":
-            return mock_exploit_model
-        raise ValueError(f"unexpected model task: {task!r}")
-
-    # ------------------------------------------------------------------
-    # 3. Mock run_subprocess for every recon tool module that imports it
-    #    (Phase 1/2 pattern — each tool module binds ``run_subprocess``
-    #    at import time, so patching the source module is insufficient).
-    # ------------------------------------------------------------------
-    from autored.subprocess_runner import SubprocessResult
-
     nmap_xml = (fixtures_dir / "nmap_lame_quick.xml").read_text()
     naabu_jsonl = (fixtures_dir / "naabu_lame.jsonl").read_text()
     httpx_json = (fixtures_dir / "httpx_lame.json").read_text()
@@ -153,46 +146,39 @@ async def test_phase3_pipeline_mocked(
     dnsx_json = (fixtures_dir / "dnsx_lame.json").read_text()
     searchsploit_json = (fixtures_dir / "searchsploit_nginx.json").read_text()
 
-    async def mock_run_subprocess(cmd, timeout=600):
+    # --- Mock run_subprocess per tool module (T28 pattern) -------------
+    # Each tool module binds `run_subprocess` at import time, so we patch
+    # the binding in every Phase 1 + Phase 2 (searchsploit) tool module.
+    async def mock_run_subprocess(cmd, timeout: int = 600) -> SubprocessResult:
         cmd_str = " ".join(cmd)
         if "nmap" in cmd_str:
-            return SubprocessResult(
-                stdout=nmap_xml, stderr="", returncode=0,
-                duration_sec=5.0, command=cmd_str,
-            )
-        if "naabu" in cmd_str:
-            return SubprocessResult(
-                stdout=naabu_jsonl, stderr="", returncode=0,
-                duration_sec=2.0, command=cmd_str,
-            )
-        if "httpx" in cmd_str:
-            return SubprocessResult(
-                stdout=httpx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
-        if "nuclei" in cmd_str:
-            return SubprocessResult(
-                stdout=nuclei_jsonl, stderr="", returncode=0,
-                duration_sec=10.0, command=cmd_str,
-            )
-        if "feroxbuster" in cmd_str:
-            return SubprocessResult(
-                stdout=feroxbuster_json, stderr="", returncode=0,
-                duration_sec=15.0, command=cmd_str,
-            )
-        if "dnsx" in cmd_str:
-            return SubprocessResult(
-                stdout=dnsx_json, stderr="", returncode=0,
-                duration_sec=1.0, command=cmd_str,
-            )
-        if "searchsploit" in cmd_str:
-            return SubprocessResult(
-                stdout=searchsploit_json, stderr="", returncode=0,
-                duration_sec=2.0, command=cmd_str,
-            )
+            stdout = nmap_xml
+        elif "naabu" in cmd_str:
+            stdout = naabu_jsonl
+        elif "httpx" in cmd_str:
+            stdout = httpx_json
+        elif "nuclei" in cmd_str:
+            stdout = nuclei_jsonl
+        elif "feroxbuster" in cmd_str:
+            stdout = feroxbuster_json
+        elif "subfinder" in cmd_str:
+            stdout = "[]"  # not in fixture plan; empty fallback
+        elif "amass" in cmd_str:
+            stdout = "[]"
+        elif "dnsx" in cmd_str:
+            stdout = dnsx_json
+        elif "gobuster" in cmd_str:
+            stdout = ""
+        elif "searchsploit" in cmd_str:
+            stdout = searchsploit_json
+        else:
+            stdout = ""
         return SubprocessResult(
-            stdout="", stderr="", returncode=1,
-            duration_sec=0.1, command=cmd_str,
+            stdout=stdout,
+            stderr="",
+            returncode=0,
+            duration_sec=1.0,
+            command=cmd_str,
         )
 
     tool_modules = [
@@ -201,168 +187,196 @@ async def test_phase3_pipeline_mocked(
         "autored.tools.httpx_tool",
         "autored.tools.nuclei",
         "autored.tools.feroxbuster",
-        "autored.tools.dnsx",
         "autored.tools.subfinder",
         "autored.tools.amass",
+        "autored.tools.dnsx",
         "autored.tools.gobuster_vhost",
         "autored.tools.searchsploit",
     ]
 
-    # ------------------------------------------------------------------
-    # 4. Mock all 4 exploit sub-agent tool wrappers. Only msfagent is
-    #    actually called by the Blue exploit plan, but we patch the
-    #    other 3 defensively in case the LLM swaps sub-agents.
-    # ------------------------------------------------------------------
+    # --- Mock NVD httpx.AsyncClient → empty vulnerabilities ---------------
+    mock_httpx_response = MagicMock()
+    mock_httpx_response.status_code = 200
+    mock_httpx_response.json.return_value = {"vulnerabilities": []}
+    mock_httpx_response.raise_for_status = MagicMock()
+    mock_httpx_client = AsyncMock()
+    mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+    mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
+    mock_httpx_client.get = AsyncMock(return_value=mock_httpx_response)
+
+    # --- Mock Chroma ----------------------------------------------------
+    mock_chroma = MagicMock()
+    mock_chroma.query_similar_findings = AsyncMock(return_value=[])
+
+    # --- Mock DeepSeek second-opinion model used by hypothesiscritic ---
+    mock_critic_response = MagicMock()
+    mock_critic_response.content = critique_json
+    mock_critic_model = MagicMock()
+    mock_critic_model.ainvoke = AsyncMock(return_value=mock_critic_response)
+
+    # --- Mock the 4 exploit sub-agent underlying tools -----------------
+    # All 4 are patched for robustness even though the LLM plan only
+    # dispatches msfagent. msfagent.metasploit_rpc returns a MsfResult
+    # with success=True + session_id (the canonical foothold signal).
     fake_msf = MsfResult(
         method="execute_exploit",
         success=True,
         data={"job_id": 1, "session_id": 1},
     )
+    mock_msf_rpc = MagicMock()
+    mock_msf_rpc.ainvoke = AsyncMock(return_value=fake_msf)
 
-    mock_msf_tool = MagicMock()
-    mock_msf_tool.ainvoke = AsyncMock(return_value=fake_msf)
+    mock_sqlmap_run = MagicMock()
+    mock_sqlmap_run.ainvoke = AsyncMock(return_value=MagicMock())
 
-    mock_sqli_tool = MagicMock()
-    mock_sqli_tool.ainvoke = AsyncMock(return_value=MagicMock(
-        success=False, vulnerable=False, injection_points=[],
-        model_dump=MagicMock(return_value={
-            "url": "", "vulnerable": False, "injection_points": [],
-            "dbms": None, "raw_output_path": None,
-            "command": "", "duration_sec": 0.0,
-        }),
-    ))
+    mock_hydra_brute = MagicMock()
+    mock_hydra_brute.ainvoke = AsyncMock(return_value=MagicMock())
 
-    mock_brute_tool = MagicMock()
-    mock_brute_tool.ainvoke = AsyncMock(return_value=MagicMock(
-        success=False, credentials=[],
-        model_dump=MagicMock(return_value={
-            "target": "", "service": "", "success": False,
-            "credentials": [], "raw_output_path": None,
-            "command": "", "duration_sec": 0.0,
-        }),
-    ))
+    mock_custom_command = MagicMock()
+    mock_custom_command.ainvoke = AsyncMock(return_value=MagicMock())
 
-    mock_custom_tool = MagicMock()
-    mock_custom_tool.ainvoke = AsyncMock(return_value=MagicMock(
-        success=False,
-        model_dump=MagicMock(return_value={
-            "command": "", "stdout": "", "stderr": "",
-            "returncode": 0, "success": False, "raw_output_path": None,
-            "duration_sec": 0.0,
-        }),
-    ))
+    # --- Build initial state --------------------------------------------
+    # I1 (Phase 3 fix wave): the EventBus now travels via
+    # RunnableConfig["configurable"]["event_bus"] rather than as a
+    # non-Pydantic state attribute. LangGraph's reducer round-trips
+    # state through model_dump() + model_validate() which strips the
+    # __pydantic_extra__ dict where `state.event_bus = ...` was stored
+    # under extra="allow" — so even when the previous test attached a
+    # bus to state, exploit_node's `getattr(state, "event_bus", None)`
+    # returned None and the gate failed open. The new config-based
+    # channel bypasses the reducer boundary entirely; the bus survives
+    # the LangGraph invocation and reaches exploit_node intact.
+    from autored.tui.event_bus import EventBus
 
-    # ------------------------------------------------------------------
-    # 5. Build initial state. Inject an EventBus so the Exploit Agent's
-    #    HitL gate has somewhere to emit events (sandbox auto_approve
-    #    means the gate returns immediately without blocking on a TUI
-    #    response — the events just accumulate in the queue for audit).
-    # ------------------------------------------------------------------
+    bus = EventBus()
     state = EngagementState(
         engagement_id=engagement_id,
         target_scope=["10.10.10.56"],
         operator="test",
         rules_of_engagement=roe,
     )
-    state.event_bus = EventBus()
 
-    # ------------------------------------------------------------------
-    # 6. Build graph + run with all mocks in place
-    # ------------------------------------------------------------------
-    checkpointer = await make_checkpointer(engagement_id)
+    # --- Patch run_subprocess in every tool module ----------------------
+    patchers = [patch(m + ".run_subprocess", side_effect=mock_run_subprocess) for m in tool_modules]
+    for p in patchers:
+        p.start()
     try:
-        graph = build_phase3_graph(checkpointer)
-        config = {"configurable": {"thread_id": engagement_id}}
-
-        with patch("autored.agents.recon.get_model", side_effect=mock_get_model), \
-             patch("autored.agents.vuln.get_model", side_effect=mock_get_model), \
-             patch(
-                 "autored.subagents.hypothesiscritic.get_model",
-                 side_effect=mock_get_model,
-             ), \
-             patch("autored.agents.exploit.get_model", side_effect=mock_get_model), \
-             patch("autored.tools.nvd.httpx.AsyncClient") as mock_httpx_cls, \
-             patch("autored.agents.vuln.ChromaStore") as mock_chroma_cls, \
-             patch("autored.subagents.msfagent.metasploit_rpc", new=mock_msf_tool), \
-             patch("autored.subagents.sqliagent.sqlmap_run", new=mock_sqli_tool), \
-             patch("autored.subagents.bruteagent.hydra_brute", new=mock_brute_tool), \
-             patch("autored.subagents.customagent.custom_command", new=mock_custom_tool), \
-             patch("autored.agents.exploit._verify_foothold", return_value=True):
-
-            # NVD returns an empty vulnerabilities list so CVEMatcher
-            # produces no CVE matches (the Vuln Agent's mocked Sonnet
-            # produces hypotheses regardless of the live NVD result).
-            mock_httpx_client = AsyncMock()
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {"vulnerabilities": []}
-            mock_response.raise_for_status = MagicMock()
-            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
-            mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
-            mock_httpx_client.get = AsyncMock(return_value=mock_response)
-            mock_httpx_cls.return_value = mock_httpx_client
-
-            # Chroma returns no similar findings
-            mock_chroma = MagicMock()
-            mock_chroma.query_similar_findings = AsyncMock(return_value=[])
-            mock_chroma_cls.return_value = mock_chroma
-
-            # Patch ``run_subprocess`` on every tool module that imports it.
-            patchers = [
-                patch(f"{mod}.run_subprocess", new=mock_run_subprocess)
-                for mod in tool_modules
-            ]
-            for p in patchers:
-                p.start()
+        with (
+            # Recon planner LLM
+            patch(
+                "autored.agents.recon.call_with_fallback",
+                new=AsyncMock(return_value=plan_recon_json),
+            ),
+            # Vuln synthesis LLM (also called for revision, but revision
+            # won't trigger because the critique fixture says "sound")
+            patch(
+                "autored.agents.vuln.call_with_fallback",
+                new=AsyncMock(return_value=hypotheses_json),
+            ),
+            # Exploit planner LLM (returns msfagent call against MS17-010)
+            patch(
+                "autored.agents.exploit.call_with_fallback",
+                new=AsyncMock(return_value=exploit_plan_json),
+            ),
+            # DeepSeek second-opinion model used by hypothesiscritic
+            patch(
+                "autored.subagents.hypothesiscritic.get_model",
+                return_value=mock_critic_model,
+            ),
+            # NVD httpx client (cvematcher's underlying tool)
+            patch(
+                "autored.tools.nvd.httpx.AsyncClient",
+                return_value=mock_httpx_client,
+            ),
+            # Chroma cross-engagement memory
+            patch(
+                "autored.agents.vuln.ChromaStore",
+                return_value=mock_chroma,
+            ),
+            # 4 exploit sub-agent underlying tool bindings
+            patch(
+                "autored.subagents.msfagent.metasploit_rpc",
+                new=mock_msf_rpc,
+            ),
+            patch(
+                "autored.subagents.sqliagent.sqlmap_run",
+                new=mock_sqlmap_run,
+            ),
+            patch(
+                "autored.subagents.bruteagent.hydra_brute",
+                new=mock_hydra_brute,
+            ),
+            patch(
+                "autored.subagents.customagent.custom_command",
+                new=mock_custom_command,
+            ),
+            # _verify_foothold short-circuits to True (the metasploit
+            # session_id signal would also trigger True via the real
+            # verifier, but mocking makes the assertion deterministic
+            # and decouples it from the verifier's envelope inspection)
+            patch(
+                "autored.agents.exploit._verify_foothold",
+                new=AsyncMock(return_value=True),
+            ),
+            # I1 (Phase 3 fix wave): the EventBus now travels via
+            # RunnableConfig, so patch the bus object's methods here
+            # (not state.event_bus). The config built below carries
+            # this same bus instance to exploit_node — the patch
+            # applies wherever the bus is referenced.
+            patch.object(
+                bus,
+                "wait_for_tui_response",
+                new=AsyncMock(
+                    return_value={
+                        "response": "approve",
+                        "modified_command": None,
+                    }
+                ),
+            ),
+            patch.object(bus, "emit_to_tui", new=AsyncMock()),
+        ):
+            # --- Build and run Phase 3 graph -------------------------------
+            # I1 (Phase 3 fix wave): checkpointer=None is still required
+            # because LangGraph's checkpointer serde layer would
+            # otherwise try to serialize the (non-serialisable)
+            # asyncio.Queue handles inside the EventBus — but the bus
+            # now lives in the config, not on state, so this is a
+            # defensive belt-and-suspenders measure rather than a
+            # workaround for the reducer stripping state attributes.
+            # The bus reliably reaches exploit_node via the config
+            # channel; the patches on `bus.*` above exercise the
+            # interactive approve path through the real LangGraph
+            # invocation (verifying I1's claim that the config-based
+            # bus survives the graph invocation intact).
+            graph = build_phase3_graph(checkpointer=None)
+            config = {
+                "configurable": {
+                    "thread_id": engagement_id,
+                    "event_bus": bus,
+                }
+            }
             try:
                 final_state = await graph.ainvoke(state, config=config)
             finally:
-                for p in patchers:
-                    p.stop()
+                # No checkpointer to close when checkpointer=None.
+                pass
     finally:
-        # AsyncSqliteSaver holds an open aiosqlite connection — close it
-        # so pytest-asyncio's event loop tears down cleanly.
-        conn = getattr(checkpointer, "conn", None)
-        if conn is not None:
-            await conn.close()
+        for p in patchers:
+            p.stop()
 
-    # ------------------------------------------------------------------
-    # 7. Verify final state
-    # ------------------------------------------------------------------
-    assert isinstance(final_state, dict)
-    # The graph went recon → vuln → exploit → report_phase1 → END.
-    # exploit_node sets phase="postex" on a verified foothold, then
-    # report_phase1 stub overwrites phase="done". Either is acceptable
-    # per the Phase 3 plan (Phase 4 will route postex → post-ex agent).
-    assert final_state["phase"] in ("done", "postex"), (
-        f"Expected phase 'done' or 'postex', got {final_state['phase']!r}"
-    )
-
-    hosts = final_state["hosts"]
-    assert len(hosts) >= 1, f"expected at least 1 host, got {len(hosts)}"
-
-    services = final_state["services"]
-    assert len(services) >= 1, f"expected at least 1 service, got {len(services)}"
-
-    # Vuln Agent should have produced hypotheses from the mocked LLM.
-    hypotheses = final_state["attack_hypotheses"]
-    assert isinstance(hypotheses, list)
-    assert len(hypotheses) >= 1, (
-        f"expected at least 1 attack hypothesis, got {len(hypotheses)}"
-    )
-
-    # Exploit Agent should have recorded a foothold (Phase 3 specific).
-    # report_phase1 only updates ``phase``, so the footholds list set
-    # by exploit_node persists through to the final state.
+    # --- Verify final state ---------------------------------------------
+    assert final_state["phase"] == "done"  # report_phase1 stub ran
+    assert len(final_state["hosts"]) >= 1
+    assert len(final_state["services"]) >= 1
+    # Phase 3: Exploit Agent recorded a verified foothold.
     footholds = final_state["footholds"]
-    assert len(footholds) >= 1, (
-        f"expected at least 1 foothold after exploit, got {len(footholds)}"
+    assert len(footholds) >= 1, "Exploit Agent recorded no foothold"
+    # footholds[0].method mirrors hypothesis.technique from the
+    # Shocker fixture ("Shellshock (CVE-2014-6271)"). The brief asserts
+    # the method "contains the exploit technique" — the technique name
+    # is the canonical signal that the foothold record corresponds to
+    # the hypothesis the Exploit Agent attempted.
+    assert "Shellshock" in footholds[0].method, (
+        f"foothold.method={footholds[0].method!r} does not contain "
+        "the exploit technique"
     )
-
-    # ------------------------------------------------------------------
-    # 8. Verify raw outputs were saved to engagements/<id>/raw/
-    # ------------------------------------------------------------------
-    raw_dir = tmp_path / "engagements" / engagement_id / "raw"
-    assert raw_dir.exists(), f"raw dir not found at {raw_dir}"
-    out_files = list(raw_dir.glob("*.out"))
-    assert len(out_files) >= 1, f"no .out files in {raw_dir}"

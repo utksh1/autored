@@ -1,0 +1,5 @@
+[*] SMBv3.0 dialect used
+[+] Launching a semi-interactive shell...
+goaad\administrator
+C:\>whoami
+goaad\administrator

@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -11,3 +15,11 @@ class WebApp(BaseModel):
     web_server: str | None = None
     redirects: bool = False
     final_url: str | None = None
+
+
+class DiscoveredPath(BaseModel):
+    url: str
+    status_code: int
+    content_length: int
+    depth: int = 0
+    discovered_at: datetime = Field(default_factory=datetime.utcnow)
