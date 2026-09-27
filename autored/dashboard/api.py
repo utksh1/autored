@@ -64,15 +64,16 @@ def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
 
     @app.post("/api/engagements/{engagement_id}/hitl/{gate_id}")
     async def resolve_hitl(engagement_id: str, gate_id: str, body: dict):
+        approved = body.get("approved")
+        if not isinstance(approved, bool):
+            raise HTTPException(status_code=422, detail="approved must be a boolean")
         bridge = bridges.get(engagement_id)
         if bridge is None:
             raise HTTPException(
                 status_code=404, detail="no live dashboard bridge for this engagement"
             )
         try:
-            return await bridge.resolve_gate(
-                gate_id, bool(body.get("approved", False)), body.get("note")
-            )
+            return await bridge.resolve_gate(gate_id, approved, body.get("note"))
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         except KeyError as e:
