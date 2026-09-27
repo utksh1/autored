@@ -169,21 +169,24 @@ def run(
         rules_of_engagement=roe_config,
     )
 
+    # I1 (Phase 3 fix wave): EventBus travels via RunnableConfig rather
+    # than a non-Pydantic state attribute. LangGraph's reducer strips
+    # `__pydantic_extra__` (where state.event_bus lived under
+    # extra="allow"), so the previous `state.event_bus = bus` pattern
+    # silently lost the bus between CLI and exploit_node. The config
+    # dict is the standard LangGraph channel for runtime objects
+    # (handles, queues, connections) — it bypasses the reducer
+    # boundary. The bus is constructed once *before* ``_run()`` so the
+    # ``--dashboard`` bridge can drain the same queue while the graph
+    # runs; ``_run()`` closes over it.
+    from autored.tui.event_bus import EventBus
+
+    bus = EventBus()
+
     async def _run() -> object:
         checkpointer = await make_checkpointer(engagement_id)
         try:
             graph = build_phase6_graph(checkpointer)
-            # I1 (Phase 3 fix wave): EventBus travels via RunnableConfig
-            # rather than a non-Pydantic state attribute. LangGraph's
-            # reducer strips `__pydantic_extra__` (where state.event_bus
-            # lived under extra="allow"), so the previous
-            # `state.event_bus = bus` pattern silently lost the bus
-            # between CLI and exploit_node. The config dict is the
-            # standard LangGraph channel for runtime objects (handles,
-            # queues, connections) — it bypasses the reducer boundary.
-            from autored.tui.event_bus import EventBus
-
-            bus = EventBus()
             config = {
                 "configurable": {
                     "thread_id": engagement_id,
@@ -201,7 +204,38 @@ def run(
             await _close_checkpointer(checkpointer)
 
     try:
-        final_state = asyncio.run(_run())
+        if dashboard:
+
+            async def _dashboard_run() -> object:
+                from autored.dashboard import DashboardBridge, create_app
+                from autored.dashboard.server import (
+                    build_server,
+                    run_dashboard_supervised,
+                )
+
+                bridge = DashboardBridge(engagement_id, bus)
+                server = build_server(
+                    create_app(bridges={engagement_id: bridge}), dashboard_port,
+                )
+                server_task = asyncio.create_task(server.serve())
+                console.print(
+                    f"[bold green]Dashboard:[/] http://127.0.0.1:{dashboard_port}"
+                )
+                await bridge.start()  # drain loop must run while the graph runs
+                try:
+                    return await _run()
+                finally:
+                    server.should_exit = True
+                    try:
+                        await asyncio.wait_for(server_task, timeout=5)
+                    except Exception as e:  # noqa: BLE001 — isolation (spec §8)
+                        log.warning("dashboard_shutdown_error", error=str(e))
+                    await run_dashboard_supervised(server_task)
+                    await bridge.stop()
+
+            final_state = asyncio.run(_dashboard_run())
+        else:
+            final_state = asyncio.run(_run())
         # ``ainvoke`` may hand back either an ``EngagementState`` (pydantic
         # model) or a plain dict depending on the LangGraph version's
         # state-schema handling. Normalise to a model so
