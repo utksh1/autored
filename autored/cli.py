@@ -78,8 +78,24 @@ def run(
         "--tui/--no-tui",
         help="Launch TUI (Phase 3+). Default is headless.",
     ),
+    dashboard: bool = typer.Option(
+        False,
+        "--dashboard/--no-dashboard",
+        help="Serve the browser dashboard on 127.0.0.1 during the run.",
+    ),
+    dashboard_port: int = typer.Option(
+        8500,
+        "--dashboard-port",
+        help="Port for the dashboard server.",
+    ),
 ) -> None:
     """Start a new engagement (headless LangGraph run)."""
+    if tui and dashboard:
+        console.print(
+            "[bold red]--tui and --dashboard are mutually exclusive:[/] both "
+            "consume the same EventBus queue; pick one operator frontend."
+        )
+        raise typer.Exit(code=1)
     from autored.config import load_roe
     from autored.graph import build_phase6_graph
     from autored.logging import get_logger, setup_logging
