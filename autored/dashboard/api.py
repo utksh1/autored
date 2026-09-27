@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
 
+from autored.dashboard.bridge import DashboardBridge
 from autored.logging import get_logger
 
 log = get_logger("dashboard.api")
@@ -52,8 +53,30 @@ def _load_state(engagement_id: str):
     return load_state_from_disk(engagement_id)
 
 
-def create_app() -> FastAPI:
+def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
+    bridges = bridges if bridges is not None else {}
     app = FastAPI(title="AutoRed Dashboard", docs_url=None, redoc_url=None)
+    app.state.bridges = bridges
+
+    from autored.dashboard.ws import router as ws_router
+
+    app.include_router(ws_router)
+
+    @app.post("/api/engagements/{engagement_id}/hitl/{gate_id}")
+    async def resolve_hitl(engagement_id: str, gate_id: str, body: dict):
+        bridge = bridges.get(engagement_id)
+        if bridge is None:
+            raise HTTPException(
+                status_code=404, detail="no live dashboard bridge for this engagement"
+            )
+        try:
+            return await bridge.resolve_gate(
+                gate_id, bool(body.get("approved", False)), body.get("note")
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except KeyError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
 
     @app.get("/api/engagements")
     async def list_engagements() -> list[dict[str, Any]]:
