@@ -1,0 +1,4 @@
+.bar { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.step { padding: 0.25rem 0.75rem; border-radius: 9999px; background: #27272a; color: #71717a; font-size: 0.85rem; }
+.done { background: #166534; color: #dcfce7; }
+.active { background: #b45309; color: #fef3c7; font-weight: 700; }
