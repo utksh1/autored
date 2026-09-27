@@ -230,7 +230,10 @@ def run(
                         await asyncio.wait_for(server_task, timeout=5)
                     except Exception as e:  # noqa: BLE001 — isolation (spec §8)
                         log.warning("dashboard_shutdown_error", error=str(e))
-                    await run_dashboard_supervised(server_task)
+                    try:
+                        await run_dashboard_supervised(server_task)
+                    except asyncio.CancelledError:
+                        log.warning("dashboard_server_cancelled_during_shutdown")
                     await bridge.stop()
 
             final_state = asyncio.run(_dashboard_run())

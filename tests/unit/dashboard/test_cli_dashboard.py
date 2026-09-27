@@ -58,7 +58,13 @@ async def test_supervised_server_clean_shutdown():
         started.set()
         await asyncio.sleep(10)
 
-    task = asyncio.create_task(quick_server())
+    server_task = asyncio.create_task(quick_server())
     await asyncio.wait_for(started.wait(), timeout=1.0)
-    await run_dashboard_supervised(task, shutdown=True)
-    assert task.cancelled() or task.done()
+    supervisor = asyncio.create_task(run_dashboard_supervised(server_task, shutdown=True))
+    # give the supervisor a moment to enter its `await task`
+    await asyncio.sleep(0.05)
+    supervisor.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor
+    # the shutdown branch must have cancelled the pending server task
+    assert server_task.cancelled()
