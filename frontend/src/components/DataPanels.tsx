@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { StateSummary } from "../types";
+import AttackGraph from "./AttackGraph";
 import styles from "./DataPanels.module.css";
 
-const TABS = ["Findings", "Secrets", "Hosts & Footholds"] as const;
+const TABS = ["Findings", "Secrets", "Hosts & Footholds", "Attack Graph"] as const;
 
 // WS summaries (spec §4) cap long lists as {"count": N} — only render tables
 // when the list is actually an array; otherwise show the capped count.
@@ -67,6 +68,7 @@ export default function DataPanels({ summary }: { summary: StateSummary }) {
           <p className={styles.dim}>{capped(summary.footholds) ?? "no footholds yet"}</p>
         )
       )}
+      {tab === "Attack Graph" && <AttackGraph summary={summary} />}
     </div>
   );
 }

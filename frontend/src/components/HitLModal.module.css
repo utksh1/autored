@@ -1,0 +1,11 @@
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal { background: #1c1c1f; border: 1px solid #b45309; border-radius: 10px; padding: 1.25rem 1.5rem; max-width: 34rem; width: 90%; color: #d4d4d8; font-family: system-ui, sans-serif; }
+.modal h3 { margin: 0 0 0.75rem; color: #fbbf24; }
+.cmd { background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; padding: 0.5rem 0.75rem; overflow-x: auto; font-size: 0.8rem; }
+.risks { color: #f87171; font-size: 0.85rem; }
+.err { color: #f87171; font-size: 0.85rem; }
+.decided { color: #4ade80; font-weight: 600; }
+.buttons { display: flex; gap: 0.75rem; margin-top: 1rem; }
+.buttons button { flex: 1; padding: 0.5rem 0; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; }
+.approve { background: #166534; color: #dcfce7; }
+.reject { background: #991b1b; color: #fee2e2; }

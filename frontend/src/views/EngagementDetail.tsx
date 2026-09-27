@@ -1,8 +1,8 @@
-// (HitLModal is added to this file in Task 9 — it does not exist yet here.)
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import ActivityLog from "../components/ActivityLog";
 import DataPanels from "../components/DataPanels";
+import HitLModal from "../components/HitLModal";
 import PhaseTimeline from "../components/PhaseTimeline";
 import RoeCard from "../components/RoeCard";
 import StateInspector from "../components/StateInspector";
@@ -35,6 +35,7 @@ export default function EngagementDetail() {
       </div>
       <StateInspector summary={summary} />
       {roe && <RoeCard roe={roe} />}
+      <HitLModal engagementId={id} summary={summary} events={events} />
     </div>
   );
 }
