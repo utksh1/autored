@@ -92,6 +92,7 @@ async def test_evidence_rejects_traversal(engagement_dir, client):
         "/api/engagements/eng_test_01/evidence/%2e%2e/%2e%2e/state.json"
     )
     assert resp.status_code == 400
+    assert resp.json()["detail"] == "path escapes evidence jail"
 
 
 @pytest.mark.asyncio

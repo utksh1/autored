@@ -11,11 +11,22 @@ from pathlib import Path
 
 from fastapi import HTTPException, Response
 
+from autored.logging import get_logger
+
+log = get_logger("dashboard.evidence")
+
 
 def resolve_evidence_path(engagement_id: str, rel_path: str) -> Path:
+    if engagement_id in ("", ".", "..") or "/" in engagement_id or "\\" in engagement_id:
+        raise HTTPException(status_code=400, detail="invalid engagement id")
     jail = (Path("engagements") / engagement_id / "evidence").resolve()
     candidate = (jail / rel_path).resolve()
     if candidate != jail and jail not in candidate.parents:
+        log.warning(
+            "evidence_path_escape",
+            engagement_id=engagement_id, path=rel_path,
+            resolved=str(candidate),
+        )
         raise HTTPException(status_code=400, detail="path escapes evidence jail")
     return candidate
 
