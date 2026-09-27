@@ -1,4 +1,5 @@
 """CLI --dashboard flag wiring tests."""
+import typer
 from typer.testing import CliRunner
 
 from autored.cli import app
@@ -16,12 +17,16 @@ def test_tui_and_dashboard_rejected() -> None:
     assert "not both" in result.output.lower() or "--tui" in result.output
 
 
-def test_run_accepts_dashboard_options() -> None:
-    # Option parsing only: an unknown --dashboard flag would exit 2 before
-    # any RoE loading. roe-sandbox.yaml exists at repo root (used by README).
+def test_run_accepts_dashboard_options(monkeypatch) -> None:
+    """--dashboard-port parses and the guard passes; abort deterministically
+    right after option parsing by short-circuiting load_roe."""
+    def _abort(*args, **kwargs):
+        raise typer.Exit(code=3)  # sentinel: we got past parsing + guard
+
+    monkeypatch.setattr("autored.config.load_roe", _abort)
     result = runner.invoke(
         app,
         ["run", "--target", "10.0.0.1", "--roe", "roe-sandbox.yaml",
-         "--no-dashboard"],
+         "--dashboard-port", "9999"],
     )
-    assert result.exit_code != 2  # 2 = usage error; anything else means flag parsed
+    assert result.exit_code == 3  # 2 = unknown option, 1 = guard fired
