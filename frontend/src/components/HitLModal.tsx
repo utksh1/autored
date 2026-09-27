@@ -12,8 +12,14 @@ interface Props {
 
 export default function HitLModal({ engagementId, summary, events }: Props) {
   // Live gate frames win (they carry command preview); pending list from the
-  // state summary keeps the modal sticky across reconnects (spec §7.1).
-  const gateFromEvent = events.find((f) => f.event.type === "hitl_gate");
+  // state summary keeps the modal sticky across reconnects (spec §7.1). The
+  // NEWEST frame wins, picked by seq rather than scan order: the socket
+  // reducer prepends frames (newest first), so a plain find/reverse-find
+  // would silently lock onto a stale, already-resolved gate.
+  const gateFrames = events.filter((f) => f.event.type === "hitl_gate");
+  const gateFromEvent = gateFrames.length > 0
+    ? gateFrames.reduce((a, b) => (b.seq > a.seq ? b : a))
+    : null;
   const pending: HitlGate[] = gateFromEvent
     ? [{
         gate_id: String(gateFromEvent.event.gate_id),
@@ -26,6 +32,7 @@ export default function HitLModal({ engagementId, summary, events }: Props) {
 
   const [error, setError] = useState<string | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
+  const [deciding, setDeciding] = useState(false);
 
   useEffect(() => { setDecided(null); setError(null); }, [pending[0]?.gate_id]);
 
@@ -33,6 +40,7 @@ export default function HitLModal({ engagementId, summary, events }: Props) {
   const gate = pending[0];
 
   async function decide(approved: boolean) {
+    setDeciding(true);
     try {
       await resolveHitl(engagementId, gate.gate_id, approved);
       setDecided(approved ? "approved" : "rejected");
@@ -42,6 +50,8 @@ export default function HitLModal({ engagementId, summary, events }: Props) {
       } else {
         setError(String(e));
       }
+    } finally {
+      setDeciding(false);
     }
   }
 
@@ -61,8 +71,8 @@ export default function HitLModal({ engagementId, summary, events }: Props) {
           <p className={styles.decided}>{decided}</p>
         ) : (
           <div className={styles.buttons}>
-            <button className={styles.approve} onClick={() => void decide(true)}>Approve</button>
-            <button className={styles.reject} onClick={() => void decide(false)}>Reject</button>
+            <button className={styles.approve} disabled={deciding} onClick={() => void decide(true)}>Approve</button>
+            <button className={styles.reject} disabled={deciding} onClick={() => void decide(false)}>Reject</button>
           </div>
         )}
       </div>
