@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 
 from autored.logging import get_logger
 
@@ -110,5 +110,11 @@ def create_app() -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail=f"unknown engagement {engagement_id}")
         return state.rules_of_engagement.model_dump()
+
+    from autored.dashboard.evidence import serve_evidence
+
+    @app.get("/api/engagements/{engagement_id}/evidence/{path:path}")
+    async def evidence(engagement_id: str, path: str) -> Response:
+        return await serve_evidence(engagement_id, path)
 
     return app

@@ -73,3 +73,38 @@ async def test_roe_endpoint(engagement_dir, client):
     assert resp.status_code == 200
     assert resp.json()["operator"] == "op"
     assert resp.json()["engagement_name"] == "t"
+
+
+@pytest.mark.asyncio
+async def test_evidence_serves_file(engagement_dir, client):
+    (engagement_dir / "evidence" / "nmap.txt").write_text("PORT STATE\n21 open")
+    resp = await client.get("/api/engagements/eng_test_01/evidence/nmap.txt")
+    assert resp.status_code == 200
+    assert "21 open" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_evidence_rejects_traversal(engagement_dir, client):
+    # httpx normalizes literal "../" segments client-side (they never reach
+    # the app), so the traversal is sent percent-encoded; the server decodes
+    # it back to "../" before the path jail sees it.
+    resp = await client.get(
+        "/api/engagements/eng_test_01/evidence/%2e%2e/%2e%2e/state.json"
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_evidence_rejects_symlink_escape(engagement_dir, client):
+    outside = engagement_dir.parent / "outside.txt"
+    outside.write_text("secret")
+    link = engagement_dir / "evidence" / "leak.txt"
+    link.symlink_to(outside)
+    resp = await client.get("/api/engagements/eng_test_01/evidence/leak.txt")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_evidence_missing_file_404(engagement_dir, client):
+    resp = await client.get("/api/engagements/eng_test_01/evidence/nope.txt")
+    assert resp.status_code == 404
