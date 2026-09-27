@@ -46,9 +46,14 @@ Thumbs.db
 # Local environment
 .env
 
+# Frontend (React SPA)
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
 # Superpowers harness files
 AGENTS.md
 GEMINI.md
 LICENSE
 RELEASE-NOTES.md
-package.json
+/package.json

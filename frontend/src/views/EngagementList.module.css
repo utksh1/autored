@@ -1,0 +1,9 @@
+.page { margin: 2rem auto; max-width: 60rem; font-family: system-ui, sans-serif; color: #d4d4d8; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #3f3f46; }
+.table th { color: #a1a1aa; font-weight: 600; }
+.badge { padding: 0.1rem 0.5rem; border-radius: 9999px; background: #3f3f46; }
+.phase_done { composes: badge; background: #166534; }
+.phase_failed { composes: badge; background: #991b1b; }
+.error { color: #f87171; }
+a { color: #60a5fa; }
