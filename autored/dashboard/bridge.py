@@ -96,33 +96,27 @@ class DashboardBridge:
         last_state_push = time.monotonic()
         last_ping = time.monotonic()
         while not self._stopping.is_set():
-            event = self.bus.try_get_tui_event()
-            if event is not None:
-                await self._handle_event(event)
-                continue  # drain eagerly
-            if self._state_dirty:
-                # phase_change is conveyed as a state snapshot, not a raw
-                # event frame; coalesce until the queue is drained so the
-                # snapshot always trails the events that preceded it.
-                self._state_dirty = False
-                await self.broadcast_state()
-                last_state_push = time.monotonic()
-            now = time.monotonic()
-            if now - last_ping >= 15.0:
-                self._fan_out({"type": "ping", "ts": time.time()})
-                last_ping = now
-            if now - last_state_push >= 5.0:
-                await self.broadcast_state()
-                last_state_push = now
-            await asyncio.sleep(POLL_INTERVAL)
+            try:
+                event = self.bus.try_get_tui_event()
+                if event is not None:
+                    await self._handle_event(event)
+                    continue  # drain eagerly
+                now = time.monotonic()
+                if now - last_ping >= 15.0:
+                    self._fan_out({"type": "ping", "ts": time.time()})
+                    last_ping = now
+                if now - last_state_push >= 5.0 or self._state_dirty:
+                    # Coalesce: a dirty snapshot broadcasts only once the
+                    # queue is drained, so it trails preceding events.
+                    await self.broadcast_state()
+                    self._state_dirty = False
+                    last_state_push = now
+                await asyncio.sleep(POLL_INTERVAL)
+            except Exception:  # noqa: BLE001 — loop must survive bad events
+                log.exception("dashboard_bridge_loop_error")
+                await asyncio.sleep(POLL_INTERVAL)  # back off persistent failure
 
     async def _handle_event(self, event: dict) -> None:
-        if event.get("type") == "phase_change":
-            # No event frame, no seq consumed: clients learn about phase
-            # changes via the state snapshot fanned out once the queue is
-            # drained (spec §4 state frames carry the authoritative phase).
-            self._state_dirty = True
-            return
         self.seq += 1
         if event.get("type") == "hitl_gate":
             gate_id = str(self.seq)
@@ -138,6 +132,10 @@ class DashboardBridge:
             event = {**event, "gate_id": gate_id}
         scrubbed = _scrub(event, self._known_secrets)
         self._fan_out({"type": "event", "seq": self.seq, "event": scrubbed})
+        if event.get("type") == "phase_change":
+            # The event frame above still goes out (spec §4: every drained
+            # event); the flag coalesces one state snapshot after the drain.
+            self._state_dirty = True
 
     # -- state snapshots --------------------------------------------------
     async def broadcast_state(self) -> None:
@@ -162,10 +160,13 @@ class DashboardBridge:
         self._fan_out({"type": "state", "seq": self.seq, "state_summary": summary})
 
     def pending_gate_summaries(self) -> list[dict]:
-        return [
-            {k: g[k] for k in ("gate_id", "gate_type", "target", "command", "risks")}
-            for g in self._pending_gates.values()
-        ]
+        return _scrub(
+            [
+                {k: g[k] for k in ("gate_id", "gate_type", "target", "command", "risks")}
+                for g in self._pending_gates.values()
+            ],
+            self._known_secrets,
+        )
 
     # -- HitL resolution ---------------------------------------------------
     async def resolve_gate(self, gate_id: str, approved: bool, note: str | None) -> dict:

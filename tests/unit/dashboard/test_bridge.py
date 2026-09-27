@@ -51,8 +51,10 @@ async def test_events_fan_out_with_seq(state_on_disk):
     bridge = DashboardBridge("eng_b", bus)
     q = _client_q(bridge)
     await bridge.start()
-    await bus.emit_to_tui({"type": "phase_change", "node": "recon", "phase": "recon"})
+    # tool_call first so it lands at seq 1; the phase_change (seq 2) must
+    # still fan out as an event frame per spec §4.
     await bus.emit_to_tui({"type": "tool_call", "node": "recon", "tool": "nmap"})
+    await bus.emit_to_tui({"type": "phase_change", "node": "recon", "phase": "recon"})
     await asyncio.sleep(0.3)  # drain loop poll
     await bridge.stop()
     f1 = await _drain_one_frame(q)
@@ -60,6 +62,7 @@ async def test_events_fan_out_with_seq(state_on_disk):
     assert f1["type"] == "event" and f1["seq"] == 1
     assert f1["event"]["tool"] == "nmap"
     assert f2["seq"] == 2
+    assert f2["event"]["type"] == "phase_change"
 
 
 @pytest.mark.asyncio
