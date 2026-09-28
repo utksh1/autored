@@ -1,17 +1,13 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StateSummary } from "../types";
+import type { HitlGate, StateSummary } from "../types";
 import HitLModal from "./HitLModal";
 
 const resolveHitl = vi.fn();
 vi.mock("../api", () => ({
   resolveHitl: (...args: unknown[]) => resolveHitl(...args),
 }));
-
-const baseSummary = {
-  pending_hitl_gates: [],
-} as unknown as StateSummary;
 
 const gateEvent = {
   seq: 12,
@@ -22,6 +18,14 @@ const gateEvent = {
   },
 };
 
+const gateFor = (id: string, command: string): HitlGate => ({
+  gate_id: id, gate_type: "exploit", target: "10.0.0.1",
+  command, risks: ["crashes host"],
+});
+
+const summaryFor = (...gates: HitlGate[]) =>
+  ({ pending_hitl_gates: gates }) as unknown as StateSummary;
+
 describe("HitLModal", () => {
   // Braced body on purpose: `() => resolveHitl.mockReset()` would return the
   // mock, which vitest treats as a beforeEach cleanup hook and calls after the
@@ -31,11 +35,17 @@ describe("HitLModal", () => {
   });
   afterEach(cleanup);
 
-  it("renders gate fields from the event frame and posts approve", async () => {
+  it("renders gate fields (frame enriches a pending summary entry) and posts approve", async () => {
     resolveHitl.mockResolvedValue(undefined);
     render(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[gateEvent]} />,
+      <HitLModal
+        engagementId="eng_1"
+        summary={summaryFor(gateFor("12", "(state preview)"))}
+        events={[gateEvent]}
+      />,
     );
+    // The matching event frame's richer command preview wins over the
+    // summary entry's placeholder.
     expect(screen.getByText(/msfconsole -x eternalblue/)).toBeTruthy();
     expect(screen.getByText("crashes host")).toBeTruthy();
     await userEvent.click(screen.getByText("Approve"));
@@ -44,25 +54,48 @@ describe("HitLModal", () => {
     );
   });
 
-  it("closes with a note on 409 (already resolved)", async () => {
-    resolveHitl.mockRejectedValue(new Error("already-resolved"));
-    render(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[gateEvent]} />,
-    );
-    await userEvent.click(screen.getByText("Reject"));
-    await waitFor(() =>
-      expect(screen.getByText(/already resolved/)).toBeTruthy(),
-    );
-  });
-
-  it("renders nothing when no gate is pending", () => {
+  it("renders nothing when a gate frame exists but the gate is resolved (no lockup)", () => {
+    // The critical regression: event frames persist in the client history
+    // after resolution — visibility must come from the state snapshot, or
+    // the full-screen overlay would block the console forever.
     const { container } = render(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[]} />,
+      <HitLModal engagementId="eng_1" summary={summaryFor()} events={[gateEvent]} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders the newest gate frame by seq and resets on gate change", async () => {
+  it("dismisses the modal after a 409 (already resolved elsewhere)", async () => {
+    resolveHitl.mockRejectedValue(new Error("already-resolved"));
+    const { container } = render(
+      <HitLModal
+        engagementId="eng_1"
+        summary={summaryFor(gateFor("12", "msfconsole -x eternalblue"))}
+        events={[gateEvent]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Reject"));
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it("renders nothing when no gate is pending", () => {
+    const { container } = render(
+      <HitLModal engagementId="eng_1" summary={summaryFor()} events={[]} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("falls back to the summary pending list when no frame exists (sticky)", () => {
+    const pendingSummary = summaryFor(
+      gateFor("7", "secretsdump.py domain/admin@10.0.0.9"),
+    );
+    render(
+      <HitLModal engagementId="eng_1" summary={pendingSummary} events={[]} />,
+    );
+    expect(screen.getByText(/secretsdump\.py/)).toBeTruthy();
+    expect(screen.getByText("Approve")).toBeTruthy();
+  });
+
+  it("shows the newest pending gate after a decision on the previous one", async () => {
     resolveHitl.mockResolvedValue(undefined);
     const gateA = {
       seq: 5,
@@ -79,20 +112,32 @@ describe("HitLModal", () => {
       },
     };
     const { rerender } = render(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[gateA]} />,
+      <HitLModal
+        engagementId="eng_1"
+        summary={summaryFor(gateFor("5", "nmap -sV 10.0.0.5"))}
+        events={[gateA]}
+      />,
     );
     await userEvent.click(screen.getByText("Approve"));
-    await waitFor(() => expect(screen.getByText("approved")).toBeTruthy());
+    await waitFor(() =>
+      expect(resolveHitl).toHaveBeenCalledWith("eng_1", "5", true),
+    );
+    // gate 5 is decided → dismissed (even while its frame is still around)
+    await waitFor(() =>
+      expect(screen.queryByText(/nmap -sV/)).toBeNull(),
+    );
 
-    // Real socket order: the reducer prepends frames, so the newest (B) comes
-    // first. The newest must win even though gate A's frame is still around.
+    // A second gate arrives: pending list now carries 12 (5 resolved) and
+    // its frame supersedes the stale one for preview purposes.
     rerender(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[gateB, gateA]} />,
+      <HitLModal
+        engagementId="eng_1"
+        summary={summaryFor(gateFor("12", "crackmapexec smb 10.0.0.1"))}
+        events={[gateB, gateA]}
+      />,
     );
     expect(screen.getByText(/crackmapexec smb/)).toBeTruthy();
     expect(screen.queryByText(/nmap -sV/)).toBeNull();
-    // gate id changed 5 → 12: the decided note is cleared, buttons return.
-    await waitFor(() => expect(screen.getByText("Approve")).toBeTruthy());
     await userEvent.click(screen.getByText("Approve"));
     await waitFor(() =>
       expect(resolveHitl).toHaveBeenLastCalledWith("eng_1", "12", true),
@@ -100,34 +145,23 @@ describe("HitLModal", () => {
     expect(resolveHitl).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back to the summary pending list when no frame exists (sticky)", () => {
-    const pendingSummary = {
-      pending_hitl_gates: [{
-        gate_id: "7", gate_type: "lateral", target: "10.0.0.9",
-        command: "secretsdump.py domain/admin@10.0.0.9", risks: ["noisy"],
-      }],
-    } as unknown as StateSummary;
-    render(
-      <HitLModal engagementId="eng_1" summary={pendingSummary} events={[]} />,
-    );
-    expect(screen.getByText(/secretsdump\.py/)).toBeTruthy();
-    expect(screen.getByText("noisy")).toBeTruthy();
-    expect(screen.getByText("Approve")).toBeTruthy();
-  });
-
-  it("disables Approve and Reject while a decision is in flight", async () => {
+  it("disables Approve and Reject while a decision is in flight, then dismisses", async () => {
     let release: () => void = () => {};
     resolveHitl.mockImplementation(
       () => new Promise<void>((res) => { release = res; }),
     );
-    render(
-      <HitLModal engagementId="eng_1" summary={baseSummary} events={[gateEvent]} />,
+    const { container } = render(
+      <HitLModal
+        engagementId="eng_1"
+        summary={summaryFor(gateFor("12", "msfconsole -x eternalblue"))}
+        events={[gateEvent]}
+      />,
     );
     await userEvent.click(screen.getByText("Approve"));
     expect(screen.getByText("Approve")).toBeDisabled();
     expect(screen.getByText("Reject")).toBeDisabled();
     await act(async () => { release(); });
-    await waitFor(() => expect(screen.getByText("approved")).toBeTruthy());
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
     expect(resolveHitl).toHaveBeenCalledOnce();
   });
 });
