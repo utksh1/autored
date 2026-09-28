@@ -43,9 +43,9 @@ export default function HitLModal({ engagementId, summary, events }: Props) {
   if (pending.length === 0) return null;
   const gate = pending[0];
   // Dismissed after our own decision (or a 409 telling us someone else
-  // resolved it) — stays hidden until a NEW gate id appears. The bridge
-  // pushes a state frame right after resolution that empties
-  // pending_hitl_gates, so this only gates the gap before that frame lands.
+  // resolved it) — stays hidden until a NEW gate id appears. The emptied
+  // pending list lands on the bridge's next scheduled state push (≤5 s);
+  // dismissedId covers that window.
   if (gate.gate_id === dismissedId) return null;
 
   async function decide(approved: boolean) {
