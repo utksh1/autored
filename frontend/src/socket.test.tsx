@@ -56,4 +56,45 @@ describe("useEngagementSocket", () => {
     await waitFor(() => expect(result.current.connected).toBe(true));
     expect(result.current.summary).toBeNull();
   });
+
+  it("does not duplicate events when hello replays after a reconnect", async () => {
+    fetchState.mockResolvedValue({ phase: "recon", pending_hitl_gates: [] });
+    const { result } = renderHook(() => useEngagementSocket("eng_3"));
+    const first = MockWebSocket.instances[0];
+    first.onopen?.();
+    const frame = (seq: number) => ({
+      data: JSON.stringify({
+        type: "event", seq,
+        event: { type: "tool_call", tool: `tool-${seq}` },
+      }),
+    });
+    first.onmessage?.(frame(1));
+    first.onmessage?.(frame(2));
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+
+    // Drop → reconnect → server replays the ring buffer via a second hello
+    // carrying the same frames. The pre-drop events must be cleared, not
+    // duplicated (activity log shows each entry once).
+    first.onclose?.();
+    // Reconnect is scheduled after the 1 s initial backoff — allow for it.
+    const second = await waitFor(
+      () => {
+        expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+        return MockWebSocket.instances[1];
+      },
+      { timeout: 3000 },
+    );
+    second.onopen?.();
+    second.onmessage?.({
+      data: JSON.stringify({
+        type: "hello", engagement_id: "eng_3", seq: 2,
+        state_summary: { phase: "recon", pending_hitl_gates: [] },
+      }),
+    });
+    second.onmessage?.(frame(1));
+    second.onmessage?.(frame(2));
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    const seqs = result.current.events.map((f) => f.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);
+  });
 });

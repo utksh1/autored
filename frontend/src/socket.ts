@@ -27,7 +27,10 @@ function reducer(state: SocketState, action: Action): SocketState {
       // stays on its loading line instead of crashing on missing fields.
       const summary =
         Object.keys(action.summary).length > 0 ? action.summary : state.summary;
-      return { ...state, summary, connected: true };
+      // Hello is followed by a full ring-buffer replay, so pre-disconnect
+      // frames must be dropped — keeping them would duplicate every
+      // previously-seen event in the activity log (spec §8 reconnect).
+      return { ...state, summary, events: [], connected: true };
     }
     case "event":
       return { ...state, events: [action.frame, ...state.events].slice(0, 500) };
