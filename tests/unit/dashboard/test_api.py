@@ -137,3 +137,44 @@ async def test_root_serves_spa_when_built(engagement_dir, tmp_path, monkeypatch)
     ) as client:
         resp = await client.get("/")
     assert "SPA" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_state_rejects_invalid_engagement_id(engagement_dir, client):
+    # `..` as the engagement id would shift every jail-style lookup one
+    # level up (the same vector the evidence jail guards) — reject with 400.
+    resp = await client.get("/api/engagements/%2e%2e/state")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "invalid engagement id"
+
+
+@pytest.mark.asyncio
+async def test_roe_rejects_invalid_engagement_id(engagement_dir, client):
+    resp = await client.get("/api/engagements/%2e%2e/roe")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_spa_serves_deep_links_and_keeps_api_precedence(
+    engagement_dir, tmp_path, monkeypatch
+):
+    # Browser refresh on a client-side route must serve index.html, while
+    # /api/* keeps JSON precedence (and unknown /api paths still 404).
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>SPA</html>")
+    monkeypatch.setattr("autored.dashboard.api.FRONTEND_DIST", dist)
+    from autored.dashboard.api import create_app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://test"
+    ) as deep_client:
+        resp = await deep_client.get("/engagements/eng_test_01")
+        assert resp.status_code == 200
+        assert "SPA" in resp.text
+        api_resp = await deep_client.get("/api/engagements")
+        assert api_resp.status_code == 200
+        assert isinstance(api_resp.json(), list)
+        missing = await deep_client.get("/api/nonexistent")
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "Not Found"

@@ -28,6 +28,15 @@ WS_LIST_CAP = 200
 FRONTEND_DIST = Path("frontend") / "dist"
 
 
+def valid_engagement_id(engagement_id: str) -> bool:
+    """Reject path-traversal engagement ids (mirrors the evidence jail guard)."""
+    return (
+        engagement_id not in ("", ".", "..")
+        and "/" not in engagement_id
+        and "\\" not in engagement_id
+    )
+
+
 def state_summary(state, ws_mode: bool = False) -> dict[str, Any]:
     """Project an EngagementState to the display dict (spec §4).
 
@@ -125,6 +134,8 @@ def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
 
     @app.get("/api/engagements/{engagement_id}/state")
     async def engagement_state(engagement_id: str) -> dict[str, Any]:
+        if not valid_engagement_id(engagement_id):
+            raise HTTPException(status_code=400, detail="invalid engagement id")
         state = _load_state(engagement_id)
         if state is None:
             raise HTTPException(status_code=404, detail=f"unknown engagement {engagement_id}")
@@ -132,6 +143,8 @@ def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
 
     @app.get("/api/engagements/{engagement_id}/roe")
     async def engagement_roe(engagement_id: str) -> dict[str, Any]:
+        if not valid_engagement_id(engagement_id):
+            raise HTTPException(status_code=400, detail="invalid engagement id")
         state = _load_state(engagement_id)
         if state is None:
             raise HTTPException(status_code=404, detail=f"unknown engagement {engagement_id}")
@@ -143,13 +156,25 @@ def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
     async def evidence(engagement_id: str, path: str) -> Response:
         return await serve_evidence(engagement_id, path)
 
-    # Static SPA mount + no-build fallback (must be last so /api/* and /ws* win)
-    from fastapi.responses import PlainTextResponse
-    from fastapi.staticfiles import StaticFiles
+    # Static SPA + no-build fallback. Registered after the /api/* and /ws
+    # routes so they keep precedence. A plain StaticFiles(html=True) mount
+    # at "/" swallows every path and 404s client-side routes — the catch-all
+    # serves real files from dist (path-jailed) and index.html for anything
+    # else, so browser refreshes on /engagements/<id> survive.
+    from fastapi.responses import FileResponse, PlainTextResponse
 
     dist = FRONTEND_DIST if FRONTEND_DIST.is_dir() else None
     if dist is not None:
-        app.mount("/", StaticFiles(directory=str(dist), html=True), name="spa")
+        dist_root = dist.resolve()
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa(full_path: str) -> FileResponse:
+            if full_path == "api" or full_path.startswith(("api/", "ws")):
+                raise HTTPException(status_code=404, detail="Not Found")
+            candidate = (dist_root / full_path).resolve()
+            if full_path and candidate.is_file() and dist_root in candidate.parents:
+                return FileResponse(candidate)
+            return FileResponse(dist_root / "index.html")
     else:
         @app.get("/", include_in_schema=False)
         async def no_build() -> PlainTextResponse:
