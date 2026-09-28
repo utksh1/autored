@@ -595,6 +595,27 @@ A `demo.tape` with typed pacing (`Type "autored run ..."`, `Enter`,
 "demo video" follow-up — it's reproducible and doesn't capture the
 operator's keystroke timing.
 
+## Dashboard (live ops console)
+
+Watch a running engagement and approve HitL gates from a browser:
+
+```bash
+# one-time: build the SPA
+npm --prefix frontend install
+npm --prefix frontend run build
+
+# run with the dashboard served on 127.0.0.1:8500
+autored run --target 192.168.56.22 --roe roe-sandbox.yaml --dashboard
+# open http://127.0.0.1:8500
+```
+
+- `--dashboard` and `--tui` are mutually exclusive (both consume the
+  same EventBus queue).
+- The dashboard is localhost-only by design; it displays harvested
+  credentials and approves actions.
+- Without a frontend build, `--dashboard` still serves the API and WS
+  and prints the build instruction at `/`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

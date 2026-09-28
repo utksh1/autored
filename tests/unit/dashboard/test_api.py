@@ -109,3 +109,31 @@ async def test_evidence_rejects_symlink_escape(engagement_dir, client):
 async def test_evidence_missing_file_404(engagement_dir, client):
     resp = await client.get("/api/engagements/eng_test_01/evidence/nope.txt")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_root_falls_back_without_build(engagement_dir, client):
+    # dist/ doesn't exist in the repo checkout → instruction page
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "npm --prefix frontend run build" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_serves_spa_when_built(engagement_dir, tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>SPA</html>")
+    monkeypatch.setattr("autored.dashboard.api.FRONTEND_DIST", dist)
+    # The app must be built AFTER the monkeypatch: create_app() snapshots
+    # FRONTEND_DIST.is_dir() at creation time, and the shared `client`
+    # fixture builds it before this test body runs (the fallback text
+    # contains "SPA", so reusing it here would pass without ever
+    # exercising the StaticFiles mount).
+    from autored.dashboard.api import create_app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert "SPA" in resp.text

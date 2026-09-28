@@ -25,6 +25,8 @@ STATE_SUMMARY_FIELDS: tuple[str, ...] = (
 # WS frames cap large lists at this length; full rows come from GET /state
 WS_LIST_CAP = 200
 
+FRONTEND_DIST = Path("frontend") / "dist"
+
 
 def state_summary(state, ws_mode: bool = False) -> dict[str, Any]:
     """Project an EngagementState to the display dict (spec §4).
@@ -140,5 +142,20 @@ def create_app(bridges: dict[str, DashboardBridge] | None = None) -> FastAPI:
     @app.get("/api/engagements/{engagement_id}/evidence/{path:path}")
     async def evidence(engagement_id: str, path: str) -> Response:
         return await serve_evidence(engagement_id, path)
+
+    # Static SPA mount + no-build fallback (must be last so /api/* and /ws* win)
+    from fastapi.responses import PlainTextResponse
+    from fastapi.staticfiles import StaticFiles
+
+    dist = FRONTEND_DIST if FRONTEND_DIST.is_dir() else None
+    if dist is not None:
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="spa")
+    else:
+        @app.get("/", include_in_schema=False)
+        async def no_build() -> PlainTextResponse:
+            return PlainTextResponse(
+                "Dashboard SPA not built. Run: npm --prefix frontend run build\n"
+                "API and WebSocket remain available at /api/* and /ws*.\n",
+            )
 
     return app
